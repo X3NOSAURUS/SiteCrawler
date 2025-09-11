@@ -1,0 +1,167 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>SiteCrawler — Panel</title>
+<style>
+  :root {
+    color-scheme: light dark;
+
+    /* Light theme */
+    --bg: #f0f6ff;
+    --panel: #ffffff;
+    --fg: #1e293b;
+    --muted: #64748b;
+    --border: #d0d7e1;
+    --row-hover: rgba(37,99,235,0.08);
+    --active: rgba(37,99,235,0.18);
+
+    --get:   #2563eb;
+    --post:  #059669;
+    --put:   #7c3aed;
+    --patch: #d97706;
+    --del:   #dc2626;
+
+    --ok-t:    #16a34a; --ok-bg:    rgba(22,163,74,0.12);
+    --redir-t: #2563eb; --redir-bg: rgba(37,99,235,0.12);
+    --warn-t:  #d97706; --warn-bg:  rgba(217,119,6,0.12);
+    --err-t:   #dc2626; --err-bg:   rgba(220,38,38,0.12);
+
+    --shadow: 0 2px 4px rgba(0,0,0,0.08), 0 8px 16px rgba(0,0,0,0.06);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      /* Dark theme */
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --fg: #f1f5f9;
+      --muted: #94a3b8;
+      --border: #334155;
+      --row-hover: rgba(148,163,184,0.10);
+      --active: rgba(37,99,235,0.25);
+      --shadow: 0 2px 4px rgba(0,0,0,0.6), 0 8px 16px rgba(0,0,0,0.5);
+    }
+  }
+
+  html, body {
+    height: 100%;
+  }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, sans-serif;
+    margin: 0;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+  }
+
+  header {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .spacer { flex: 1; }
+
+  input[type="search"],
+  select,
+  button {
+    font: inherit;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--fg);
+  }
+  button { cursor: pointer; }
+  button:hover { background: color-mix(in oklab, var(--panel) 92%, var(--fg) 8%); }
+  input[type="checkbox"] { transform: scale(1.1); vertical-align: middle; accent-color: var(--get); }
+
+  /* Main area: roomy two-column layout */
+  #main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 420px; /* tree | detail */
+    gap: 12px;
+    min-height: 0;
+  }
+
+  /* Panels */
+  #treeEl, #detailEl {
+    background: var(--panel);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 10px;
+    overflow: auto;
+  }
+
+  /* Tree */
+  .host { font-weight: 700; margin: 12px 0 6px; }
+  ul.tree { list-style: none; margin: 0; padding-left: 14px; border-left: 1px solid var(--border); }
+  .node {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 6px; border-radius: 6px; cursor: pointer;
+  }
+  .node:hover { background: var(--row-hover); }
+  .active { background: var(--active); }
+  .seg { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+
+  /* Method badges */
+  .method { font-weight: 700; padding: 2px 8px; border-radius: 999px; color: #fff; }
+  .GET{background:var(--get);} .POST{background:var(--post);} .PUT{background:var(--put);} .PATCH{background:var(--patch);} .DELETE{background:var(--del);}
+
+  .muted { color: var(--muted); }
+
+  /* Status pills */
+  .pill {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    display: inline-block; font-weight: 600; margin-left: 4px;
+  }
+  .ok{color:var(--ok-t);background:var(--ok-bg);}
+  .redir{color:var(--redir-t);background:var(--redir-bg);}
+  .warn{color:var(--warn-t);background:var(--warn-bg);}
+  .err{color:var(--err-t);background:var(--err-bg);}
+
+  /* Detail panel */
+  #detailEl h3 { margin: 0 0 8px; font-size: 14px; }
+  .kv { display: grid; grid-template-columns: 80px 1fr; gap: 4px 8px; margin-bottom: 8px; }
+  #detailEl textarea {
+    width: 100%; min-height: 160px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 8px;
+    font: inherit; resize: vertical;
+    background: var(--panel); color: var(--fg);
+  }
+  .row-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+</style>
+
+<header>
+  <label><input id="toggleEl" type="checkbox"> Capturing</label>
+  <select id="hostEl"></select>
+  <input id="searchEl" type="search" placeholder="Filter path…" />
+  <select id="methodEl">
+    <option value="">Any Method</option>
+    <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
+  </select>
+  <select id="statusCodeEl"><option value="">Any Status</option></select>
+  <select id="testedFilterEl">
+    <option value="">All</option>
+    <option value="untested">Untested</option>
+    <option value="tested">Tested</option>
+  </select>
+  <div class="spacer"></div>
+  <button id="markVisibleTestedEl">Mark visible ✓</button>
+  <button id="exportEl">CSV</button>
+  <button id="resetEl">Reset</button>
+</header>
+
+<div id="main">
+  <div id="treeEl"></div>
+  <div id="detailEl"></div>
+</div>
+
+<!-- Reuse the same logic as the popup -->
+<script src="popup.js"></script>

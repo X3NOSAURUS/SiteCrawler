@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "SiteCrawler",
+  "version": "0.5.0",
+  "description": "Crawl sites you visit and build a list of endpoints.",
+  "permissions": ["webRequest", "webNavigation", "storage", "tabs", "windows"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "service_worker.js" },
+  "action": { "default_popup": "popup.html", "default_title": "SiteCrawler" }
+}
