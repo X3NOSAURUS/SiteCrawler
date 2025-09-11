@@ -10,26 +10,64 @@ document.addEventListener("DOMContentLoaded", () => {
   const markVisibleTestedEl = document.getElementById("markVisibleTestedEl");
   const treeEl = document.getElementById("treeEl");
   const detailEl = document.getElementById("detailEl");
-  const hideAssetsEl = document.getElementById("hideAssetsEl"); // NEW
+  const hideAssetsEl = document.getElementById("hideAssetsEl");
+  const importBtnEl = document.getElementById("importBtnEl");   // opens import.html
+  const importEl = document.getElementById("importEl");         // unused in popup, hidden if present
 
   const expandedMap = new Map(); // "<origin> /a/b" -> expanded? (default true)
   let pollTimer = null;
   let snapshot = {};       // { origin: [records] }
   let selectedKey = null;  // `${origin}|||${method} ${path}${qs}`
-  let savedHostElValue = "";
+  let savedHostElValue = "";  // persisted host
 
+  // Persisted filters bundle
+  let savedFilters = {
+    search: "",
+    method: "",
+    statusCode: "",
+    tested: "",
+    hideAssets: false
+  };
+
+  // --- Wire static buttons ---
   exportEl.onclick = exportCSV;
   resetEl.onclick = () => chrome.runtime.sendMessage({ type:"resetData" });
   markVisibleTestedEl.onclick = markVisibleVisible;
 
+  // Import in dedicated tab to avoid popup closing
+  if (importBtnEl) {
+    importBtnEl.onclick = () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL("import.html") });
+    };
+  }
+  if (importEl) importEl.style.display = "none";
+
   init();
 
   function init(){
-    // Load saved host selection first
-    chrome.storage.local.get(["sc_ui_host"], ({ sc_ui_host }) => {
+  // Load saved UI state first (host + filters), then start data polling
+  chrome.storage.local.get(["sc_ui_host","sc_ui_filters"], ({ sc_ui_host, sc_ui_filters }) => {
     savedHostElValue = sc_ui_host || "";
+    if (sc_ui_filters && typeof sc_ui_filters === "object") {
+      savedFilters = {
+        search:     sc_ui_filters.search ?? "",
+        method:     sc_ui_filters.method ?? "",
+        statusCode: sc_ui_filters.statusCode ?? "",
+        tested:     sc_ui_filters.tested ?? "",
+        hideAssets: !!sc_ui_filters.hideAssets
+      };
+    }
 
-    // Then load extension state and start polling
+    // Apply saved filters to controls
+    if (searchEl)       searchEl.value = savedFilters.search;
+    if (methodEl)       methodEl.value = savedFilters.method;
+    if (testedFilterEl) testedFilterEl.value = savedFilters.tested;
+    if (hideAssetsEl)   hideAssetsEl.checked = savedFilters.hideAssets;
+
+    // Persist them immediately so later hydrations don't overwrite
+    saveFilters();
+
+    // Load extension state and start polling
     chrome.runtime.sendMessage({ type:"getState" }, (resp)=>{
       toggleEl.checked = !!resp?.enabled;
       startPolling();
@@ -40,26 +78,48 @@ document.addEventListener("DOMContentLoaded", () => {
     chrome.runtime.sendMessage({ type:"setEnabled", enabled: toggleEl.checked });
   });
 
-  [hostEl, searchEl, methodEl, statusCodeEl, testedFilterEl].forEach(el =>
-    el.addEventListener("input", renderTree)
-  );
+  // Persist filters on every change
+  [searchEl, methodEl, statusCodeEl, testedFilterEl].forEach(el => {
+    if (!el) return;
+    el.addEventListener("input", () => {
+      saveFilters();
+      renderTree();
+    });
+  });
+  if (hideAssetsEl) hideAssetsEl.addEventListener("input", () => {
+    saveFilters();
+    renderTree();
+  });
 
   // Persist host selection on change
   hostEl.addEventListener("input", () => {
     chrome.storage.local.set({ sc_ui_host: hostEl.value });
+    savedHostElValue = hostEl.value;
+    renderTree();
   });
 }
 
+  function saveFilters(){
+    const toSave = {
+      search:     (searchEl && searchEl.value) || "",
+      method:     (methodEl && methodEl.value) || "",
+      statusCode: (statusCodeEl && statusCodeEl.value) || "",
+      tested:     (testedFilterEl && testedFilterEl.value) || "",
+      hideAssets: !!(hideAssetsEl && hideAssetsEl.checked)
+    };
+    chrome.storage.local.set({ sc_ui_filters: toSave });
+  }
 
   function startPolling(){
     clearInterval(pollTimer);
     pollTimer = setInterval(()=>{
       chrome.runtime.sendMessage({ type:"getData" }, (resp)=>{
         snapshot = resp?.data || {};
-        hydrateHostDropdown();
-        hydrateStatusDropdown();
+        hydrateHostDropdown();     // will apply saved host when available
+        hydrateStatusDropdown();   // will apply saved status code
         renderTree();
-        // only re-render details if we don't already have focus
+
+        // only re-render details if we don't already have focus (avoid text losing focus)
         if (selectedKey && !document.activeElement.matches("#detailNoteEl, #detailNoteEl *")) {
           renderDetailsByKey(selectedKey);
         }
@@ -69,18 +129,22 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function hydrateHostDropdown(){
     const hosts = Object.keys(snapshot).sort();
-    // Prefer current selection, else the saved one (only if still present)
-    const prev = hostEl.value || savedHostElValue;
-    hostEl.innerHTML = `<option value="">All hosts (${hosts.length})</option>` +
-    hosts.map(h=>`<option>${h}</option>`).join("");
 
-    if (hosts.includes(prev)) {
-      hostEl.value = prev;
-    } else if (savedHostElValue && !hosts.includes(savedHostElValue)) {
-      // Saved host vanished (e.g., not visited this session) → reset
-      hostEl.value = "";
-      }
-  }    
+    // Prefer current selection; if empty, prefer saved selection
+    const preferred = hostEl.value || savedHostElValue;
+
+    hostEl.innerHTML = `<option value="">All hosts (${hosts.length})</option>` +
+      hosts.map(h=>`<option>${h}</option>`).join("");
+
+    if (preferred && hosts.includes(preferred)) {
+      hostEl.value = preferred;
+      // keep savedHostElValue in sync once applied
+      savedHostElValue = preferred;
+    } else {
+      // Do NOT force-clear here; keep savedHostElValue so it can apply on a later hydration
+      if (!hostEl.value) hostEl.value = ""; // ensure some value
+    }
+  }
 
   function hydrateStatusDropdown() {
     const hostFilter = hostEl.value;
@@ -93,10 +157,17 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
     const sorted = [...set].map(Number).sort((a,b)=>a-b).map(String);
-    const prev = statusCodeEl.value;
+    const prev = statusCodeEl.value || savedFilters.statusCode;
     statusCodeEl.innerHTML = `<option value="">Any Status</option>` +
       sorted.map(c => `<option>${c}</option>`).join("");
-    if (sorted.includes(prev)) statusCodeEl.value = prev;
+
+    // Re-apply saved/previous selection if available
+    if (prev && sorted.includes(prev)) {
+      statusCodeEl.value = prev;
+    } else if (prev && !sorted.includes(prev)) {
+      // saved status code not present in current data — fall back to Any Status
+      statusCodeEl.value = "";
+    }
   }
 
   function renderTree(){
@@ -105,7 +176,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const methodFilter = (methodEl.value||"").toUpperCase();
     const codeFilter = statusCodeEl.value;
     const testedFilter = testedFilterEl.value; // "", "untested", "tested"
-    const hideAssets = !!(hideAssetsEl && hideAssetsEl.checked); // NEW
+    const hideAssets = !!(hideAssetsEl && hideAssetsEl.checked);
 
     const container = document.createElement("div");
 
@@ -121,7 +192,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         if (testedFilter==="tested" && !r.tested) return false;
         if (testedFilter==="untested" && r.tested) return false;
-        if (hideAssets && isStaticAsset(r)) return false; // NEW
+        if (hideAssets && isStaticAsset(r)) return false;
         return true;
       });
       if (!recs.length) continue;
@@ -218,7 +289,7 @@ document.addEventListener("DOMContentLoaded", () => {
     treeEl.replaceChildren(container);
   }
 
-  // -------- NEW: static asset detection ----------
+  // -------- static asset detection ----------
   function isStaticAsset(r){
     // By path extension
     const p = (r.pathTemplate || "").toLowerCase();
