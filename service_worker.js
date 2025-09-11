@@ -185,7 +185,56 @@ chrome.runtime.onMessage.addListener((msg,_sender,sendResponse)=>{
     height: 820
     }, () => sendResponse({ ok: true }));
     return true; // async response
- }
+ } else if (msg?.type === "importCsv") {
+   try {
+    const { entries = [] } = msg;
+
+    // Rebuild the in-memory map from CSV entries
+    const next = new Map();
+
+    for (const e of entries) {
+      // Expecting: origin, method, pathTemplate, querySkeleton, statusCounts, statuses, hits, firstSeen, lastSeen, tested, note
+      if (!e || !e.origin) continue;
+
+      const origin = e.origin;
+      if (!next.has(origin)) next.set(origin, new Map());
+
+      const method = (e.method || "GET").toUpperCase();
+      const pt = e.pathTemplate || "/";
+      const qs = e.querySkeleton || "";
+      const key = `${method} ${pt}${qs}`;
+
+      const statusCounts = e.statusCounts && typeof e.statusCounts === "object" ? e.statusCounts : {};
+      const statuses = new Set(Array.isArray(e.statuses) ? e.statuses.filter(n => Number.isFinite(n)) : []);
+
+      next.get(origin).set(key, {
+        method,
+        pathTemplate: pt,
+        querySkeleton: qs,
+        types: new Set(),             // CSV doesn’t include this; keep empty
+        statuses,
+        statusCounts,
+        hits: Number.isFinite(e.hits) ? e.hits : 0,
+        firstSeen: e.firstSeen || e.lastSeen || Date.now(),
+        lastSeen:  e.lastSeen  || e.firstSeen || Date.now(),
+        tested: !!e.tested,
+        note: e.note || ""
+      });
+    }
+
+    // Replace current dataset and persist
+    endpoints = next;
+    saveSoon();
+    updateBadge();
+
+    sendResponse({ ok: true, imported: entries.length });
+  } catch (err) {
+    console.error("[SiteCrawler] importCsv failed:", err);
+    sendResponse({ ok: false, error: String(err) });
+  }
+  return true; // keep the message channel open for async sendResponse
+}
+
 });
 
 chrome.runtime.onInstalled.addListener(updateBadge);
