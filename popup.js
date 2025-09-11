@@ -16,6 +16,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let pollTimer = null;
   let snapshot = {};       // { origin: [records] }
   let selectedKey = null;  // `${origin}|||${method} ${path}${qs}`
+  let savedHostElValue = "";
 
   exportEl.onclick = exportCSV;
   resetEl.onclick = () => chrome.runtime.sendMessage({ type:"resetData" });
@@ -24,20 +25,31 @@ document.addEventListener("DOMContentLoaded", () => {
   init();
 
   function init(){
+    // Load saved host selection first
+    chrome.storage.local.get(["sc_ui_host"], ({ sc_ui_host }) => {
+    savedHostElValue = sc_ui_host || "";
+
+    // Then load extension state and start polling
     chrome.runtime.sendMessage({ type:"getState" }, (resp)=>{
       toggleEl.checked = !!resp?.enabled;
       startPolling();
     });
+  });
 
-    toggleEl.addEventListener("change", ()=>{
-      chrome.runtime.sendMessage({ type:"setEnabled", enabled: toggleEl.checked });
-    });
+  toggleEl.addEventListener("change", ()=>{
+    chrome.runtime.sendMessage({ type:"setEnabled", enabled: toggleEl.checked });
+  });
 
-    [hostEl, searchEl, methodEl, statusCodeEl, testedFilterEl].forEach(el =>
-      el.addEventListener("input", renderTree)
-    );
-    if (hideAssetsEl) hideAssetsEl.addEventListener("input", renderTree); // NEW
-  }
+  [hostEl, searchEl, methodEl, statusCodeEl, testedFilterEl].forEach(el =>
+    el.addEventListener("input", renderTree)
+  );
+
+  // Persist host selection on change
+  hostEl.addEventListener("input", () => {
+    chrome.storage.local.set({ sc_ui_host: hostEl.value });
+  });
+}
+
 
   function startPolling(){
     clearInterval(pollTimer);
@@ -57,11 +69,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function hydrateHostDropdown(){
     const hosts = Object.keys(snapshot).sort();
-    const prev = hostEl.value;
+    // Prefer current selection, else the saved one (only if still present)
+    const prev = hostEl.value || savedHostElValue;
     hostEl.innerHTML = `<option value="">All hosts (${hosts.length})</option>` +
-      hosts.map(h=>`<option>${h}</option>`).join("");
-    if (hosts.includes(prev)) hostEl.value = prev;
-  }
+    hosts.map(h=>`<option>${h}</option>`).join("");
+
+    if (hosts.includes(prev)) {
+      hostEl.value = prev;
+    } else if (savedHostElValue && !hosts.includes(savedHostElValue)) {
+      // Saved host vanished (e.g., not visited this session) → reset
+      hostEl.value = "";
+      }
+  }    
 
   function hydrateStatusDropdown() {
     const hostFilter = hostEl.value;
