@@ -5,62 +5,96 @@ document.addEventListener("DOMContentLoaded", () => {
   const methodEl = document.getElementById("methodEl");
   const statusCodeEl = document.getElementById("statusCodeEl");
   const testedFilterEl = document.getElementById("testedFilterEl");
+  const hideAssetsEl = document.getElementById("hideAssetsEl");
   const exportEl = document.getElementById("exportEl");
   const resetEl = document.getElementById("resetEl");
   const markVisibleTestedEl = document.getElementById("markVisibleTestedEl");
+  const importBtnEl = document.getElementById("importBtnEl");   // present in popup & panel
+  const importEl = document.getElementById("importEl");         // present in panel only
   const treeEl = document.getElementById("treeEl");
   const detailEl = document.getElementById("detailEl");
-  const hideAssetsEl = document.getElementById("hideAssetsEl");
-  const openWindowEl = document.getElementById("openWindowEl");
 
-  const expandedMap = new Map(); // "<origin> /a/b" -> expanded? (default true)
+  const expandedMap = new Map();
   let pollTimer = null;
-  let snapshot = {};       // { origin: [records] }
-  let selectedKey = null;  // `${origin}|||${method} ${path}${qs}`
+  let snapshot = {};
+  let selectedKey = null;
   let savedHostElValue = "";
+  let savedFilters = { search:"", method:"", statusCode:"", tested:"", hideAssets:false };
 
   exportEl.onclick = exportCSV;
   resetEl.onclick = () => chrome.runtime.sendMessage({ type:"resetData" });
   markVisibleTestedEl.onclick = markVisibleVisible;
 
+  // Import wiring: panel (inline) vs popup (open import.html)
+  if (importBtnEl) {
+    if (importEl) {
+      // PANEL: inline import
+      importBtnEl.onclick = () => importEl.click();
+      importEl.onchange = handleImportInline;
+    } else {
+      // POPUP: open import.html in tab
+      importBtnEl.onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL("import.html") });
+    }
+  }
+
   init();
 
   function init(){
-    // Load saved host selection first
-    chrome.storage.local.get(["sc_ui_host"], ({ sc_ui_host }) => {
-    savedHostElValue = sc_ui_host || "";
+    chrome.storage.local.get(["sc_ui_host","sc_ui_filters"], ({ sc_ui_host, sc_ui_filters }) => {
+      savedHostElValue = sc_ui_host || "";
+      if (sc_ui_filters && typeof sc_ui_filters === "object") {
+        savedFilters = {
+          search:     sc_ui_filters.search ?? "",
+          method:     sc_ui_filters.method ?? "",
+          statusCode: sc_ui_filters.statusCode ?? "",
+          tested:     sc_ui_filters.tested ?? "",
+          hideAssets: !!sc_ui_filters.hideAssets
+        };
+      }
 
-    // Then load extension state and start polling
-    chrome.runtime.sendMessage({ type:"getState" }, (resp)=>{
-      toggleEl.checked = !!resp?.enabled;
-      startPolling();
+      // Apply saved filters
+      if (searchEl)       searchEl.value = savedFilters.search;
+      if (methodEl)       methodEl.value = savedFilters.method;
+      if (testedFilterEl) testedFilterEl.value = savedFilters.tested;
+      if (hideAssetsEl)   hideAssetsEl.checked = !!savedFilters.hideAssets;
+      // statusCodeEl is applied after hydration since options are dynamic
+
+      // Save once so later hydrations don't clobber them
+      saveFilters();
+
+      chrome.runtime.sendMessage({ type:"getState" }, (resp)=>{
+        toggleEl.checked = !!resp?.enabled;
+        startPolling();
+      });
     });
-  });
 
-  toggleEl.addEventListener("change", ()=>{
-    chrome.runtime.sendMessage({ type:"setEnabled", enabled: toggleEl.checked });
-  });
-
-  [hostEl, searchEl, methodEl, statusCodeEl, testedFilterEl].forEach(el =>
-    el.addEventListener("input", renderTree)
-  );
-
-  // Persist host selection on change
-  hostEl.addEventListener("input", () => {
-    chrome.storage.local.set({ sc_ui_host: hostEl.value });
-  });
-
-  openWindowEl.onclick = () => {
-  chrome.windows.create({
-    url: chrome.runtime.getURL("panel.html"), // new standalone page
-    type: "popup",
-    width: 1280,
-    height: 820
+    toggleEl.addEventListener("change", ()=>{
+      chrome.runtime.sendMessage({ type:"setEnabled", enabled: toggleEl.checked });
     });
-  };
 
-}
+    [searchEl, methodEl, statusCodeEl, testedFilterEl].forEach(el => {
+      if (!el) return;
+      el.addEventListener("input", () => { saveFilters(); renderTree(); });
+    });
+    if (hideAssetsEl) hideAssetsEl.addEventListener("input", () => { saveFilters(); renderTree(); });
 
+    hostEl.addEventListener("input", () => {
+      chrome.storage.local.set({ sc_ui_host: hostEl.value });
+      savedHostElValue = hostEl.value;
+      renderTree();
+    });
+  }
+
+  function saveFilters(){
+    const toSave = {
+      search:     (searchEl && searchEl.value) || "",
+      method:     (methodEl && methodEl.value) || "",
+      statusCode: (statusCodeEl && statusCodeEl.value) || "",
+      tested:     (testedFilterEl && testedFilterEl.value) || "",
+      hideAssets: !!(hideAssetsEl && hideAssetsEl.checked)
+    };
+    chrome.storage.local.set({ sc_ui_filters: toSave });
+  }
 
   function startPolling(){
     clearInterval(pollTimer);
@@ -70,7 +104,6 @@ document.addEventListener("DOMContentLoaded", () => {
         hydrateHostDropdown();
         hydrateStatusDropdown();
         renderTree();
-        // only re-render details if we don't already have focus
         if (selectedKey && !document.activeElement.matches("#detailNoteEl, #detailNoteEl *")) {
           renderDetailsByKey(selectedKey);
         }
@@ -80,18 +113,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function hydrateHostDropdown(){
     const hosts = Object.keys(snapshot).sort();
-    // Prefer current selection, else the saved one (only if still present)
-    const prev = hostEl.value || savedHostElValue;
-    hostEl.innerHTML = `<option value="">All hosts (${hosts.length})</option>` +
-    hosts.map(h=>`<option>${h}</option>`).join("");
+    const preferred = hostEl.value || savedHostElValue;
 
-    if (hosts.includes(prev)) {
-      hostEl.value = prev;
-    } else if (savedHostElValue && !hosts.includes(savedHostElValue)) {
-      // Saved host vanished (e.g., not visited this session) → reset
-      hostEl.value = "";
-      }
-  }    
+    hostEl.innerHTML = `<option value="">All hosts (${hosts.length})</option>` +
+      hosts.map(h=>`<option>${h}</option>`).join("");
+
+    if (preferred && hosts.includes(preferred)) {
+      hostEl.value = preferred;
+      savedHostElValue = preferred;
+    } else {
+      if (!hostEl.value) hostEl.value = "";
+    }
+  }
 
   function hydrateStatusDropdown() {
     const hostFilter = hostEl.value;
@@ -104,10 +137,11 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
     const sorted = [...set].map(Number).sort((a,b)=>a-b).map(String);
-    const prev = statusCodeEl.value;
+    const prev = statusCodeEl.value || savedFilters.statusCode;
     statusCodeEl.innerHTML = `<option value="">Any Status</option>` +
       sorted.map(c => `<option>${c}</option>`).join("");
-    if (sorted.includes(prev)) statusCodeEl.value = prev;
+    if (prev && sorted.includes(prev)) { statusCodeEl.value = prev; }
+    else if (prev && !sorted.includes(prev)) { statusCodeEl.value = ""; }
   }
 
   function renderTree(){
@@ -115,8 +149,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const q = (searchEl.value||"").toLowerCase();
     const methodFilter = (methodEl.value||"").toUpperCase();
     const codeFilter = statusCodeEl.value;
-    const testedFilter = testedFilterEl.value; // "", "untested", "tested"
-    const hideAssets = !!(hideAssetsEl && hideAssetsEl.checked); // NEW
+    const testedFilter = testedFilterEl.value;
+    const hideAssets = !!(hideAssetsEl && hideAssetsEl.checked);
 
     const container = document.createElement("div");
 
@@ -132,7 +166,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         if (testedFilter==="tested" && !r.tested) return false;
         if (testedFilter==="untested" && r.tested) return false;
-        if (hideAssets && isStaticAsset(r)) return false; // NEW
+        if (hideAssets && isStaticAsset(r)) return false;
         return true;
       });
       if (!recs.length) continue;
@@ -142,7 +176,6 @@ document.addEventListener("DOMContentLoaded", () => {
       hostHdr.textContent = origin;
       container.appendChild(hostHdr);
 
-      // Build a path tree from filtered records
       const root = { children:new Map(), leaves:[] };
       for (const r of recs){
         const full = r.pathTemplate.replace(/^\//,"");
@@ -160,7 +193,6 @@ document.addEventListener("DOMContentLoaded", () => {
       container.appendChild(ul);
 
       const renderNode = (node, parentEl, prefix=[]) => {
-        // Folders
         for (const [name, child] of [...node.children.entries()].sort((a,b)=>a[0].localeCompare(b[0]))){
           const li = document.createElement("li");
           const pathKey = `${origin} /${prefix.concat(name).join("/")}`;
@@ -185,7 +217,6 @@ document.addEventListener("DOMContentLoaded", () => {
           if (open) renderNode(child, childUl, prefix.concat(name));
         }
 
-        // Leaves (endpoints)
         for (const r of node.leaves.sort((a,b)=>a.method.localeCompare(b.method))){
           const leaf = document.createElement("li");
           const line = document.createElement("div");
@@ -213,12 +244,11 @@ document.addEventListener("DOMContentLoaded", () => {
           leaf.appendChild(line);
           parentEl.appendChild(leaf);
 
-          // checkbox handler
           const chk = line.querySelector(".chk-tested");
           chk.addEventListener("click", (ev)=>{
             ev.stopPropagation();
             chrome.runtime.sendMessage({ type:"setTested", origin, recKey, tested: chk.checked });
-            r.tested = chk.checked; // optimistic
+            r.tested = chk.checked;
           });
         }
       };
@@ -229,9 +259,7 @@ document.addEventListener("DOMContentLoaded", () => {
     treeEl.replaceChildren(container);
   }
 
-  // -------- NEW: static asset detection ----------
   function isStaticAsset(r){
-    // By path extension
     const p = (r.pathTemplate || "").toLowerCase();
     const exts = [
       ".png",".jpg",".jpeg",".gif",".webp",".svg",".ico",".bmp",".avif",
@@ -242,23 +270,17 @@ document.addEventListener("DOMContentLoaded", () => {
     ];
     if (exts.some(ext => p.endsWith(ext))) return true;
 
-    // By request types collected via webRequest
-    // Treat these as static/noisy:
     const ASSET_TYPES = new Set(["image","stylesheet","font","script","media","other"]);
-    // NOTE: we exclude "xmlhttprequest" (XHR/fetch) from assets.
     const types = new Set(r.types || []);
     if (types.size && [...types].every(t => ASSET_TYPES.has(t))) return true;
 
-    // Heuristic: GET + no query params + typical asset folder
     if (r.method === "GET" && !r.querySkeleton) {
       if (/(?:^|\/)(?:assets?|static|images?|img|fonts?|icons?|media|scripts?|styles?)(?:\/|$)/.test(p)) {
         return true;
       }
     }
-
     return false;
   }
-  // -----------------------------------------------
 
   function renderStatusPills(r) {
     if (!r.statusCounts) return "";
@@ -274,7 +296,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const url = origin + rec.pathTemplate + (rec.querySkeleton||"");
     const recKey = `${rec.method} ${rec.pathTemplate}${rec.querySkeleton||""}`;
 
-    // Build status-counts pretty block
     const statusLines = rec.statusCounts
       ? Object.entries(rec.statusCounts)
           .sort(([a],[b]) => parseInt(a)-parseInt(b))
@@ -285,7 +306,6 @@ document.addEventListener("DOMContentLoaded", () => {
     detailEl.innerHTML = `
       <div>
         <h3 style="margin-top:0">${escapeHtml(rec.method)} ${escapeHtml(url)}</h3>
-
         <div class="kv" style="display:grid; grid-template-columns: 120px 1fr; gap:6px; margin-bottom:8px;">
           <div>Hits</div><div>${rec.hits}</div>
           <div>Status mix</div><div>${escapeHtml(statusLines || "—")}</div>
@@ -294,7 +314,6 @@ document.addEventListener("DOMContentLoaded", () => {
           <div>Note</div>
           <div><textarea id="detailNoteEl" rows="3" style="width:100%;"></textarea></div>
         </div>
-
         <div class="row-actions" style="display:flex; gap:6px; flex-wrap:wrap;">
           <button data-copy="${escapeAttr(url)}">Copy URL</button>
           <button data-copy="${escapeAttr(rec.pathTemplate + (rec.querySkeleton||""))}">Copy Path</button>
@@ -304,12 +323,10 @@ document.addEventListener("DOMContentLoaded", () => {
       </div>
     `;
 
-    // wire copy buttons
     detailEl.querySelectorAll("[data-copy]").forEach(b=>{
       b.addEventListener("click", ()=> navigator.clipboard.writeText(b.dataset.copy));
     });
 
-    // wire tested + note
     const noteEl = detailEl.querySelector("#detailNoteEl");
     const testedBox = detailEl.querySelector("#detailTestedEl");
     if (noteEl) {
@@ -323,7 +340,7 @@ document.addEventListener("DOMContentLoaded", () => {
       testedBox.addEventListener("change", ()=>{
         chrome.runtime.sendMessage({ type:"setTested", origin, recKey, tested: testedBox.checked });
         rec.tested = testedBox.checked;
-        renderTree(); // reflect in tree checkbox
+        renderTree();
       });
     }
   }
@@ -334,7 +351,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (rec) renderDetails(rec, origin);
   }
 
-  // --- Bulk mark visible ---
   function collectVisibleKeys(){
     const hostFilter = hostEl.value;
     const q = (searchEl.value||"").toLowerCase();
@@ -369,7 +385,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const items = collectVisibleKeys();
     if (!items.length) return;
     chrome.runtime.sendMessage({ type:"setManyTested", items, tested: true }, ()=>{
-      // Optimistic update in local snapshot
       for (const {origin, recKey} of items){
         const arr = snapshot[origin] || [];
         const rec = arr.find(r => (r.method+" "+r.pathTemplate+(r.querySkeleton||"")) === recKey);
@@ -380,7 +395,6 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // --- Export CSV ---
   function exportCSV(){
     const rows = [];
     for (const [origin, recs] of Object.entries(snapshot)){
@@ -409,6 +423,99 @@ document.addEventListener("DOMContentLoaded", () => {
       .concat(rows.map(r=>header.map(h=>csvEscape(r[h])).join(",")))
       .join("\n");
     download("sitecrawler.csv", new Blob([csv], {type:"text/csv"}));
+  }
+
+  // ===== Inline import (panel) =====
+  function handleImportInline(){
+    const file = importEl.files && importEl.files[0];
+    if (!file) return;
+    file.text().then(text=>{
+      const rows = parseCsvToRows(text);
+      const entries = normalizeRowsForImport(rows);
+      chrome.runtime.sendMessage({ type:"importCsv", entries }, (resp)=>{
+        if (chrome.runtime.lastError) {
+          alert("Import failed: " + chrome.runtime.lastError.message);
+          return;
+        }
+        if (!resp?.ok) {
+          alert("Import failed: " + (resp?.error || "Unknown error"));
+          return;
+        }
+        alert(`Imported ${resp.imported||entries.length} records. Reopen the panel/popup to see them.`);
+      });
+    }).catch(err=>{
+      console.error(err);
+      alert("Failed to read CSV.");
+    }).finally(()=>{
+      importEl.value = ""; // reset file input
+    });
+  }
+
+  function parseCsvToRows(csv){
+    const lines = csv.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+    while (lines.length && !lines[lines.length-1].trim()) lines.pop();
+    if (!lines.length) return [];
+    const header = splitCsvLine(lines[0]);
+    const out = [];
+    for (let i=1;i<lines.length;i++){
+      if (!lines[i].trim()) continue;
+      const cols = splitCsvLine(lines[i]);
+      const row = {};
+      header.forEach((h,idx)=> row[h] = cols[idx] ?? "");
+      out.push(row);
+    }
+    return out;
+  }
+  function splitCsvLine(line){
+    const res = [];
+    let cur = "", inQ = false;
+    for (let i=0;i<line.length;i++){
+      const ch = line[i];
+      if (inQ){
+        if (ch === '"'){
+          if (line[i+1] === '"'){ cur += '"'; i++; }
+          else { inQ = false; }
+        } else cur += ch;
+      } else {
+        if (ch === ','){ res.push(cur); cur=""; }
+        else if (ch === '"'){ inQ = true; }
+        else cur += ch;
+      }
+    }
+    res.push(cur);
+    return res;
+  }
+  function normalizeRowsForImport(rows){
+    return rows.map(r=>{
+      const statusCounts = {};
+      if (r.statusCounts){
+        r.statusCounts.split("|").forEach(pair=>{
+          const m = pair.match(/^(\d{1,3})x(\d+)$/);
+          if (m) statusCounts[m[1]] = parseInt(m[2],10);
+        });
+      }
+      const statuses = (r.statuses||"").split("|")
+        .map(s=>parseInt(s,10))
+        .filter(n=>Number.isFinite(n));
+
+      const tested = String(r.tested).trim()==="1" || /^true$/i.test(String(r.tested));
+      const lastSeen = Date.parse(r.lastSeen) || Date.now();
+      const hits = parseInt(r.hits,10);
+
+      return {
+        origin: r.origin || "",
+        method: (r.method||"GET").toUpperCase(),
+        pathTemplate: r.path || "/",
+        querySkeleton: r.query || "",
+        statusCounts,
+        statuses,
+        hits: Number.isFinite(hits) ? hits : 0,
+        firstSeen: lastSeen,
+        lastSeen,
+        tested,
+        note: r.note || ""
+      };
+    }).filter(e=>e.origin && e.method && e.pathTemplate!=null);
   }
 
   // --- helpers ---
