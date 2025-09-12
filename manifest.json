@@ -29,20 +29,5 @@
     "128": "icon/icon_128.png",
     "256": "icon/icon_256.png",
     "512": "icon/icon_512.png"
-  },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content_script_main.js"],
-      "run_at": "document_start",
-      "all_frames": true,
-      "world": "MAIN"
-    },
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content_script_relay.js"],
-      "run_at": "document_start",
-      "all_frames": true
-    }
-  ]
+  }
 }
