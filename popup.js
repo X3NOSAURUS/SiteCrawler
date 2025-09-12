@@ -14,26 +14,28 @@ document.addEventListener("DOMContentLoaded", () => {
   const treeEl = document.getElementById("treeEl");
   const detailEl = document.getElementById("detailEl");
   const openWindowEl = document.getElementById("openWindowEl");
+
   if (openWindowEl) {
     openWindowEl.addEventListener("click", () => {
       try {
-        chrome.windows.create({
-          url: chrome.runtime.getURL("panel.html"),
-          type: "popup",
-          width: 1280,
-          height: 820
-        }, () => {
-        // optional: surface any runtime error
-        if (chrome.runtime.lastError) {
-          console.warn("Open panel failed:", chrome.runtime.lastError.message);
-        }
-      });
-    } catch (e) {
-      console.warn("Open panel threw:", e);
-    }
-  });
-}
-
+        chrome.windows.create(
+          {
+            url: chrome.runtime.getURL("panel.html"),
+            type: "popup",
+            width: 1280,
+            height: 820
+          },
+          () => {
+            if (chrome.runtime.lastError) {
+              console.warn("Open panel failed:", chrome.runtime.lastError.message);
+            }
+          }
+        );
+      } catch (e) {
+        console.warn("Open panel threw:", e);
+      }
+    });
+  }
 
   const expandedMap = new Map();
   let pollTimer = null;
@@ -462,7 +464,7 @@ document.addEventListener("DOMContentLoaded", () => {
           alert("Import failed: " + (resp?.error || "Unknown error"));
           return;
         }
-        alert(`Imported ${resp.imported||entries.length} records. Reopen the panel/popup to see them.`);
+        alert(`Imported ${resp.imported||entries.length} records.`);
       });
     }).catch(err=>{
       console.error(err);
@@ -544,7 +546,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const esc = pathTmpl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return "^" + esc.replace(/:id/g,"[^/]+") + "$";
   }
-  function escapeHtml(s){ return (s==null?"":String(s)).replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;","&gt;":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
+  function escapeHtml(s){
+    return (s==null?"":String(s)).replace(/[&<>"']/g, c=>({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    }[c]));
+  }
   function escapeAttr(s){ return (s==null?"":String(s)).replace(/"/g,"&quot;"); }
   function csvEscape(v){
     const s = (v==null?"":String(v));
