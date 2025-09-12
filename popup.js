@@ -47,7 +47,15 @@ document.addEventListener("DOMContentLoaded", () => {
   let savedFilters = { search:"", method:"", statusCode:"", tested:"", hideAssets:false };
 
   exportEl.onclick = exportCSV;
-  resetEl.onclick = () => chrome.runtime.sendMessage({ type:"resetData" });
+  resetEl.onclick = () => {
+  chrome.runtime.sendMessage({ type:"resetData" }, () => {
+    snapshot = {};
+    selectedKey = null;
+    treeEl.replaceChildren();
+    detailEl.replaceChildren();
+  });
+};
+
   markVisibleTestedEl.onclick = markVisibleVisible;
 
   // Import wiring: panel (inline) vs popup (open import.html)
