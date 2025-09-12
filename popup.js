@@ -1,3 +1,4 @@
+// popup.js
 document.addEventListener("DOMContentLoaded", () => {
   const toggleEl = document.getElementById("toggleEl");
   const hostEl = document.getElementById("hostEl");
@@ -15,6 +16,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const detailEl = document.getElementById("detailEl");
   const openWindowEl = document.getElementById("openWindowEl");
 
+  // Open in separate window (panel)
   if (openWindowEl) {
     openWindowEl.addEventListener("click", () => {
       try {
@@ -37,10 +39,10 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  const expandedMap = new Map();
+  const expandedMap = new Map(); // "<origin> /a/b" -> expanded? (default true)
   let pollTimer = null;
-  let snapshot = {};
-  let selectedKey = null;
+  let snapshot = {};       // { origin: [records] }
+  let selectedKey = null;  // `${origin}|||${method} ${path}${qs}`
   let savedHostElValue = "";
   let savedFilters = { search:"", method:"", statusCode:"", tested:"", hideAssets:false };
 
@@ -51,18 +53,20 @@ document.addEventListener("DOMContentLoaded", () => {
   // Import wiring: panel (inline) vs popup (open import.html)
   if (importBtnEl) {
     if (importEl) {
-      // PANEL: inline import
+      // PANEL: inline import via hidden file input
       importBtnEl.onclick = () => importEl.click();
       importEl.onchange = handleImportInline;
     } else {
-      // POPUP: open import.html in tab
-      importBtnEl.onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL("import.html") });
+      // POPUP: open import.html in a new tab (better UX/CSP-safe)
+      importBtnEl.onclick = () =>
+        chrome.tabs.create({ url: chrome.runtime.getURL("import.html") });
     }
   }
 
   init();
 
   function init(){
+    // Restore persisted UI selections
     chrome.storage.local.get(["sc_ui_host","sc_ui_filters"], ({ sc_ui_host, sc_ui_filters }) => {
       savedHostElValue = sc_ui_host || "";
       if (sc_ui_filters && typeof sc_ui_filters === "object") {
@@ -75,32 +79,36 @@ document.addEventListener("DOMContentLoaded", () => {
         };
       }
 
-      // Apply saved filters
+      // Apply saved filters to UI
       if (searchEl)       searchEl.value = savedFilters.search;
       if (methodEl)       methodEl.value = savedFilters.method;
       if (testedFilterEl) testedFilterEl.value = savedFilters.tested;
       if (hideAssetsEl)   hideAssetsEl.checked = !!savedFilters.hideAssets;
-      // statusCodeEl is applied after hydration since options are dynamic
+      // statusCodeEl is applied after we hydrate options (dynamic)
 
-      // Save once so later hydrations don't clobber them
+      // Persist once so hydrations don't clobber state
       saveFilters();
 
+      // Sync capture toggle, then start polling
       chrome.runtime.sendMessage({ type:"getState" }, (resp)=>{
         toggleEl.checked = !!resp?.enabled;
         startPolling();
       });
     });
 
+    // Capture on/off
     toggleEl.addEventListener("change", ()=>{
       chrome.runtime.sendMessage({ type:"setEnabled", enabled: toggleEl.checked });
     });
 
+    // Filters
     [searchEl, methodEl, statusCodeEl, testedFilterEl].forEach(el => {
       if (!el) return;
       el.addEventListener("input", () => { saveFilters(); renderTree(); });
     });
     if (hideAssetsEl) hideAssetsEl.addEventListener("input", () => { saveFilters(); renderTree(); });
 
+    // Persist host selection
     hostEl.addEventListener("input", () => {
       chrome.storage.local.set({ sc_ui_host: hostEl.value });
       savedHostElValue = hostEl.value;
@@ -127,6 +135,7 @@ document.addEventListener("DOMContentLoaded", () => {
         hydrateHostDropdown();
         hydrateStatusDropdown();
         renderTree();
+        // only re-render details if the textarea isn't focused
         if (selectedKey && !document.activeElement.matches("#detailNoteEl, #detailNoteEl *")) {
           renderDetailsByKey(selectedKey);
         }
@@ -137,7 +146,6 @@ document.addEventListener("DOMContentLoaded", () => {
   function hydrateHostDropdown(){
     const hosts = Object.keys(snapshot).sort();
     const preferred = hostEl.value || savedHostElValue;
-
     hostEl.innerHTML = `<option value="">All hosts (${hosts.length})</option>` +
       hosts.map(h=>`<option>${h}</option>`).join("");
 
@@ -163,8 +171,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const prev = statusCodeEl.value || savedFilters.statusCode;
     statusCodeEl.innerHTML = `<option value="">Any Status</option>` +
       sorted.map(c => `<option>${c}</option>`).join("");
-    if (prev && sorted.includes(prev)) { statusCodeEl.value = prev; }
-    else if (prev && !sorted.includes(prev)) { statusCodeEl.value = ""; }
+    if (prev && sorted.includes(prev)) {
+      statusCodeEl.value = prev;
+    } else if (prev && !sorted.includes(prev)) {
+      statusCodeEl.value = "";
+    }
   }
 
   function renderTree(){
@@ -172,7 +183,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const q = (searchEl.value||"").toLowerCase();
     const methodFilter = (methodEl.value||"").toUpperCase();
     const codeFilter = statusCodeEl.value;
-    const testedFilter = testedFilterEl.value;
+    const testedFilter = testedFilterEl.value; // "", "untested", "tested"
     const hideAssets = !!(hideAssetsEl && hideAssetsEl.checked);
 
     const container = document.createElement("div");
@@ -199,6 +210,7 @@ document.addEventListener("DOMContentLoaded", () => {
       hostHdr.textContent = origin;
       container.appendChild(hostHdr);
 
+      // Build a path tree from filtered records
       const root = { children:new Map(), leaves:[] };
       for (const r of recs){
         const full = r.pathTemplate.replace(/^\//,"");
@@ -216,6 +228,7 @@ document.addEventListener("DOMContentLoaded", () => {
       container.appendChild(ul);
 
       const renderNode = (node, parentEl, prefix=[]) => {
+        // folders
         for (const [name, child] of [...node.children.entries()].sort((a,b)=>a[0].localeCompare(b[0]))){
           const li = document.createElement("li");
           const pathKey = `${origin} /${prefix.concat(name).join("/")}`;
@@ -240,6 +253,7 @@ document.addEventListener("DOMContentLoaded", () => {
           if (open) renderNode(child, childUl, prefix.concat(name));
         }
 
+        // leaves (endpoints)
         for (const r of node.leaves.sort((a,b)=>a.method.localeCompare(b.method))){
           const leaf = document.createElement("li");
           const line = document.createElement("div");
@@ -267,11 +281,12 @@ document.addEventListener("DOMContentLoaded", () => {
           leaf.appendChild(line);
           parentEl.appendChild(leaf);
 
+          // checkbox handler
           const chk = line.querySelector(".chk-tested");
           chk.addEventListener("click", (ev)=>{
             ev.stopPropagation();
             chrome.runtime.sendMessage({ type:"setTested", origin, recKey, tested: chk.checked });
-            r.tested = chk.checked;
+            r.tested = chk.checked; // optimistic
           });
         }
       };
@@ -282,6 +297,7 @@ document.addEventListener("DOMContentLoaded", () => {
     treeEl.replaceChildren(container);
   }
 
+  // Static asset detection for filtering
   function isStaticAsset(r){
     const p = (r.pathTemplate || "").toLowerCase();
     const exts = [
@@ -346,10 +362,12 @@ document.addEventListener("DOMContentLoaded", () => {
       </div>
     `;
 
+    // copy handlers
     detailEl.querySelectorAll("[data-copy]").forEach(b=>{
       b.addEventListener("click", ()=> navigator.clipboard.writeText(b.dataset.copy));
     });
 
+    // tested + note
     const noteEl = detailEl.querySelector("#detailNoteEl");
     const testedBox = detailEl.querySelector("#detailTestedEl");
     if (noteEl) {
@@ -363,7 +381,7 @@ document.addEventListener("DOMContentLoaded", () => {
       testedBox.addEventListener("change", ()=>{
         chrome.runtime.sendMessage({ type:"setTested", origin, recKey, tested: testedBox.checked });
         rec.tested = testedBox.checked;
-        renderTree();
+        renderTree(); // reflect state in tree
       });
     }
   }
@@ -374,6 +392,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (rec) renderDetails(rec, origin);
   }
 
+  // --- Bulk mark visible ---
   function collectVisibleKeys(){
     const hostFilter = hostEl.value;
     const q = (searchEl.value||"").toLowerCase();
@@ -408,6 +427,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const items = collectVisibleKeys();
     if (!items.length) return;
     chrome.runtime.sendMessage({ type:"setManyTested", items, tested: true }, ()=>{
+      // Optimistic update
       for (const {origin, recKey} of items){
         const arr = snapshot[origin] || [];
         const rec = arr.find(r => (r.method+" "+r.pathTemplate+(r.querySkeleton||"")) === recKey);
@@ -418,6 +438,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  // --- Export CSV ---
   function exportCSV(){
     const rows = [];
     for (const [origin, recs] of Object.entries(snapshot)){
@@ -450,7 +471,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // ===== Inline import (panel) =====
   function handleImportInline(){
-    const file = importEl.files && importEl.files[0];
+    const file = importEl && importEl.files && importEl.files[0];
     if (!file) return;
     file.text().then(text=>{
       const rows = parseCsvToRows(text);
@@ -470,10 +491,11 @@ document.addEventListener("DOMContentLoaded", () => {
       console.error(err);
       alert("Failed to read CSV.");
     }).finally(()=>{
-      importEl.value = ""; // reset file input
+      if (importEl) importEl.value = ""; // reset file input
     });
   }
 
+  // --- CSV helpers (robust to quotes/commas/newlines) ---
   function parseCsvToRows(csv){
     const lines = csv.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
     while (lines.length && !lines[lines.length-1].trim()) lines.pop();
@@ -541,7 +563,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }).filter(e=>e.origin && e.method && e.pathTemplate!=null);
   }
 
-  // --- helpers ---
+  // --- generic helpers ---
   function pathToRegex(pathTmpl){
     const esc = pathTmpl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return "^" + esc.replace(/:id/g,"[^/]+") + "$";
