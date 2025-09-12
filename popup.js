@@ -13,6 +13,27 @@ document.addEventListener("DOMContentLoaded", () => {
   const importEl = document.getElementById("importEl");         // present in panel only
   const treeEl = document.getElementById("treeEl");
   const detailEl = document.getElementById("detailEl");
+  const openWindowEl = document.getElementById("openWindowEl");
+  if (openWindowEl) {
+    openWindowEl.addEventListener("click", () => {
+      try {
+        chrome.windows.create({
+          url: chrome.runtime.getURL("panel.html"),
+          type: "popup",
+          width: 1280,
+          height: 820
+        }, () => {
+        // optional: surface any runtime error
+        if (chrome.runtime.lastError) {
+          console.warn("Open panel failed:", chrome.runtime.lastError.message);
+        }
+      });
+    } catch (e) {
+      console.warn("Open panel threw:", e);
+    }
+  });
+}
+
 
   const expandedMap = new Map();
   let pollTimer = null;
