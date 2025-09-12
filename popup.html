@@ -76,21 +76,14 @@
   button:hover { background: color-mix(in oklab, var(--panel) 92%, var(--fg) 8%); }
   input[type="checkbox"] { transform: scale(1.1); vertical-align: middle; accent-color: var(--get); }
 
-  /* Main area: responsive. In popup we stack on narrow to avoid horizontal scroll */
+  /* Main area */
   #main {
     flex: 1;
     display: grid;
     gap: 12px;
     min-height: 0;
-    grid-template-columns: 1fr;           /* default: single column */
-    grid-template-rows: 1fr auto;         /* tree then details */
-  }
-  /* When there’s room (e.g., in panel.html or if popup gets wider), go side-by-side */
-  @media (min-width: 960px) {
-    #main {
-      grid-template-columns: 1fr 360px;   /* tree | detail */
-      grid-template-rows: 1fr;
-    }
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
   }
 
   #treeEl, #detailEl {
@@ -101,34 +94,23 @@
     overflow: auto;
   }
 
-  /* Tree */
   .host { font-weight: 700; margin: 12px 0 6px; }
   ul.tree { list-style: none; margin: 0; padding-left: 14px; border-left: 1px solid var(--border); }
-  .node {
-    display: flex; align-items: center; gap: 6px;
-    padding: 4px 6px; border-radius: 6px; cursor: pointer;
-  }
+  .node { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
   .node:hover { background: var(--row-hover); }
   .active { background: var(--active); }
   .seg { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 
-  /* Method badges */
   .method { font-weight: 700; padding: 2px 8px; border-radius: 999px; color: #fff; }
   .GET{background:var(--get);} .POST{background:var(--post);} .PUT{background:var(--put);} .PATCH{background:var(--patch);} .DELETE{background:var(--del);}
-
   .muted { color: var(--muted); }
 
-  /* Status pills */
-  .pill {
-    font-size: 11px; padding: 2px 8px; border-radius: 999px;
-    display: inline-block; font-weight: 600; margin-left: 4px;
-  }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; display: inline-block; font-weight: 600; margin-left: 4px; }
   .ok{color:var(--ok-t);background:var(--ok-bg);}
   .redir{color:var(--redir-t);background:var(--redir-bg);}
   .warn{color:var(--warn-t);background:var(--warn-bg);}
   .err{color:var(--err-t);background:var(--err-bg);}
 
-  /* Detail panel */
   #detailEl h3 { margin: 0 0 8px; font-size: 14px; }
   .kv { display: grid; grid-template-columns: 80px 1fr; gap: 4px 8px; margin-bottom: 8px; }
   #detailEl textarea {
@@ -145,8 +127,8 @@
 <header>
   <label><input id="toggleEl" type="checkbox"> Capturing</label>
   <label title="Hide images, fonts, CSS/JS, media, maps">
-  <input id="hideAssetsEl" type="checkbox" /> Hide static assets
-</label>
+    <input id="hideAssetsEl" type="checkbox" /> Hide static assets
+  </label>
   <select id="hostEl"></select>
   <input id="searchEl" type="search" placeholder="Filter path…" />
   <select id="methodEl">
@@ -161,6 +143,8 @@
   </select>
   <div class="spacer"></div>
   <button id="openWindowEl" title="Open in a separate window">Open ↗</button>
+  <!-- NEW: Import button for popup (opens import.html in a tab) -->
+  <button id="importBtnEl" title="Import from CSV">Import CSV</button>
   <button id="markVisibleTestedEl">Mark visible ✓</button>
   <button id="exportEl">CSV</button>
   <button id="resetEl">Reset</button>
@@ -172,4 +156,19 @@
 </div>
 
 <script src="popup.js"></script>
+<script>
+  // Wire the Import button to open import.html (safer than using a file input in the popup)
+  document.getElementById('importBtnEl')?.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('import.html') });
+  });
 
+  // If popup.js doesn’t wire Open ↗ yet, do it here:
+  document.getElementById('openWindowEl')?.addEventListener('click', () => {
+    chrome.windows.create({
+      url: chrome.runtime.getURL('panel.html'),
+      type: 'popup',
+      width: 1280,
+      height: 820
+    });
+  });
+</script>
