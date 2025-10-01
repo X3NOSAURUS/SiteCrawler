@@ -1,17 +1,13 @@
 {
   "manifest_version": 3,
   "name": "SiteCrawler",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Crawl sites you visit and build a list of endpoints.",
-  "permissions": [
-    "webRequest",
-    "webNavigation",
-    "storage",
-    "tabs",
-    "scripting"
-  ],
+  "permissions": ["webRequest", "webNavigation", "storage", "tabs", "scripting"],
   "host_permissions": ["<all_urls>"],
-  "background": { "service_worker": "service_worker.js" },
+  "background": {
+    "service_worker": "service_worker.js"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "SiteCrawler",
@@ -29,5 +25,19 @@
     "128": "icon/icon_128.png",
     "256": "icon/icon_256.png",
     "512": "icon/icon_512.png"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content_script_forms.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["panel.html", "import.html"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

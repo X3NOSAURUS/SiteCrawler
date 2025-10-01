@@ -1,7 +1,7 @@
 let enabled = false;
 let endpoints = new Map(); // Map<origin, Map<key, Rec>>
 
-// Restore persisted state
+// restore persisted state
 chrome.storage.local.get(["sc_enabled","sc_data"]).then(({ sc_enabled, sc_data }) => {
   if (typeof sc_enabled === "boolean") enabled = sc_enabled;
   if (sc_data) endpoints = reviveMap(sc_data);
@@ -24,13 +24,17 @@ function reviveMap(obj){
         firstSeen: rec.firstSeen||Date.now(),
         lastSeen: rec.lastSeen||0,
         tested: !!rec.tested,
-        note: rec.note || ""
+        note: rec.note || "",
+        formSummary: rec.formSummary || null,
+        fieldsChecked: !!rec.fieldsChecked,
+        fieldTests: rec.fieldTests && typeof rec.fieldTests === "object" ? rec.fieldTests : {}
       });
     }
     m.set(origin, inner);
   }
   return m;
 }
+
 function dumpMap(){
   const out = {};
   for (const [origin, inner] of endpoints){
@@ -47,21 +51,30 @@ function dumpMap(){
         firstSeen: r.firstSeen,
         lastSeen: r.lastSeen,
         tested: !!r.tested,
-        note: r.note || ""
+        note: r.note || "",
+        formSummary: r.formSummary || null,
+        fieldsChecked: !!r.fieldsChecked,
+        fieldTests: r.fieldTests || {}
       };
     }
   }
   return out;
 }
+
 let saveTimer=null;
-function saveSoon(){ clearTimeout(saveTimer); saveTimer=setTimeout(()=>chrome.storage.local.set({ sc_enabled:enabled, sc_data:dumpMap() }), 300); }
+function saveSoon(){
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(()=>chrome.storage.local.set({ sc_enabled:enabled, sc_data:dumpMap() }), 300);
+}
+
 function updateBadge(){
+  // Keep the dot. (If you later swap icons for eyes-open/eyes-closed, do it here.)
   chrome.action.setBadgeBackgroundColor({ color: enabled ? "#10b981" : "#9ca3af" });
   chrome.action.setBadgeText({ text: enabled ? "●" : "" });
   chrome.action.setTitle({ title: enabled ? "SiteCrawler (ON)" : "SiteCrawler (OFF)" });
 }
 
-// Path templating
+// -------- Path templating helpers --------
 const ID_SEG = /^(?:\d{1,19}|[0-9a-fA-F]{8,}-?[0-9a-fA-F-]{0,27})$/;
 const STRIP_PARAMS = /^(?:utm_.+|gclid|fbclid|msclkid)$/i;
 
@@ -80,6 +93,7 @@ function querySkeleton(qs){
 }
 function recKey(method, pt, qs){ return `${(method||"GET").toUpperCase()} ${pt}${qs}`; }
 
+// -------- Upsert / capture --------
 function upsert(urlStr, method, statusCode, type){
   if (!enabled) return;
   try{
@@ -103,7 +117,10 @@ function upsert(urlStr, method, statusCode, type){
         firstSeen: Date.now(),
         lastSeen: 0,
         tested: false,
-        note: ""
+        note: "",
+        formSummary: null,
+        fieldsChecked: false,
+        fieldTests: {}
       });
     }
     const rec = map.get(key);
@@ -118,18 +135,19 @@ function upsert(urlStr, method, statusCode, type){
   }catch{}
 }
 
-// Capture everything
 chrome.webRequest.onCompleted.addListener(
   (d)=>{ if (enabled) upsert(d.url, d.method, d.statusCode, d.type); },
   { urls:["<all_urls>"] }
 );
 
-// Messaging
+// -------- Messaging --------
 chrome.runtime.onMessage.addListener((msg,_sender,sendResponse)=>{
   if (msg?.type==="getState") {
     sendResponse({ enabled });
+
   } else if (msg?.type==="setEnabled") {
     enabled=!!msg.enabled; updateBadge(); saveSoon(); sendResponse({ok:true,enabled});
+
   } else if (msg?.type==="getData") {
     const out = {};
     for (const [origin, map] of endpoints){
@@ -144,12 +162,17 @@ chrome.runtime.onMessage.addListener((msg,_sender,sendResponse)=>{
         firstSeen: v.firstSeen,
         lastSeen: v.lastSeen,
         tested: !!v.tested,
-        note: v.note || ""
+        note: v.note || "",
+        formSummary: v.formSummary || null,
+        fieldsChecked: !!v.fieldsChecked,
+        fieldTests: v.fieldTests || {}
       }));
     }
     sendResponse({ data: out });
+
   } else if (msg?.type==="resetData") {
     endpoints.clear(); saveSoon(); sendResponse({ ok:true });
+
   } else if (msg?.type==="setTested") {
     const { origin, recKey, tested } = msg;
     const map = endpoints.get(origin);
@@ -159,6 +182,7 @@ chrome.runtime.onMessage.addListener((msg,_sender,sendResponse)=>{
       saveSoon();
     }
     sendResponse({ok:true});
+
   } else if (msg?.type==="setManyTested") {
     const { items = [], tested } = msg;
     for (const it of items) {
@@ -169,6 +193,7 @@ chrome.runtime.onMessage.addListener((msg,_sender,sendResponse)=>{
     }
     saveSoon();
     sendResponse({ok:true});
+
   } else if (msg?.type==="setNote") {
     const { origin, recKey, note } = msg;
     const map = endpoints.get(origin);
@@ -177,64 +202,162 @@ chrome.runtime.onMessage.addListener((msg,_sender,sendResponse)=>{
       saveSoon();
     }
     sendResponse({ok:true});
+
+  } else if (msg?.type === "reportForms") {
+    const { url, title, forms = [], looseFields = [] } = msg.payload || {};
+    try {
+      upsert(url, "GET", undefined, "document");
+
+      const u = new URL(url);
+      const origin = u.origin;
+      const pt = templatePath(u.pathname || "/");
+      const qs = querySkeleton(u.search.slice(1));
+      const key = recKey("GET", pt, qs);
+
+      const map = endpoints.get(origin);
+      if (map && map.has(key)) {
+        const rec = map.get(key);
+
+        const safeActionPath = (action) => {
+          try {
+            // absolute URL
+            const au = new URL(action, origin);
+            return templatePath(au.pathname || "/");
+          } catch {
+            return templatePath((action || "/"));
+          }
+        };
+
+        const formSummary = (forms||[]).map(f => ({
+          method: f.method,
+          enctype: f.enctype,
+          actionPathTemplate: safeActionPath(f.action),
+          fields: (f.fields||[]).map(x => ({
+            name: x.name || x.id || "",
+            type: x.type,
+            required: !!x.required,
+            multiple: !!x.multiple,
+            accept: x.accept || ""
+          }))
+        }));
+
+        const looseSummary = (looseFields||[]).map(x => ({
+          name: x.name || x.id || "",
+          type: x.type,
+          required: !!x.required,
+          multiple: !!x.multiple,
+          accept: x.accept || ""
+        }));
+
+        rec.formSummary = {
+          title: title || rec.formSummary?.title || "",
+          detectedAt: Date.now(),
+          forms: formSummary,
+          looseFields: looseSummary
+        };
+
+        rec.fieldTests = rec.fieldTests || {};
+
+        if (!rec.note && (formSummary.length || looseSummary.length)) {
+          const names = [
+            ...formSummary.flatMap(f => f.fields.map(ff => ff.name).filter(Boolean)),
+            ...looseSummary.map(ff => ff.name).filter(Boolean)
+          ];
+          const uniq = [...new Set(names)].slice(0, 12);
+          rec.note = uniq.length
+            ? `Detected form fields: ${uniq.join(", ")}`
+            : "Form elements detected on this page.";
+        }
+
+        saveSoon();
+      }
+    } catch {}
+    sendResponse && sendResponse({ ok:true });
+    return true;
+
+  } else if (msg?.type === "setFieldsChecked") {
+    const { origin, recKey, checked } = msg;
+    const map = endpoints.get(origin);
+    if (map && map.has(recKey)) {
+      map.get(recKey).fieldsChecked = !!checked;
+      saveSoon();
+    }
+    sendResponse({ ok:true });
+
+  } else if (msg?.type === "setFieldTest") {
+    const { origin, recKey, fieldKey, test, value } = msg;
+    const map = endpoints.get(origin);
+    if (map && map.has(recKey)) {
+      const rec = map.get(recKey);
+      rec.fieldTests = rec.fieldTests || {};
+      rec.fieldTests[fieldKey] = rec.fieldTests[fieldKey] || {};
+      rec.fieldTests[fieldKey][test] = !!value;
+      saveSoon();
+    }
+    sendResponse({ ok:true });
+
   } else if (msg?.type === "openPanel") {
     chrome.windows.create({
-    url: chrome.runtime.getURL("panel.html"),
-    type: "popup",
-    width: 1280,
-    height: 820
+      url: chrome.runtime.getURL("panel.html"),
+      type: "popup",
+      width: 1280,
+      height: 820
     }, () => sendResponse({ ok: true }));
-    return true; // async response
- } else if (msg?.type === "importCsv") {
-   try {
-    const { entries = [] } = msg;
+    return true; 
 
-    // Rebuild the in-memory map from CSV entries
-    const next = new Map();
+  } else if (msg?.type === "importCsv") {
+    try {
+      const { entries = [] } = msg;
 
-    for (const e of entries) {
-      // Expecting: origin, method, pathTemplate, querySkeleton, statusCounts, statuses, hits, firstSeen, lastSeen, tested, note
-      if (!e || !e.origin) continue;
+      // rebuild the in-memory map from CSV entries
+      const next = new Map();
 
-      const origin = e.origin;
-      if (!next.has(origin)) next.set(origin, new Map());
+      for (const e of entries) {
+        if (!e || !e.origin) continue;
 
-      const method = (e.method || "GET").toUpperCase();
-      const pt = e.pathTemplate || "/";
-      const qs = e.querySkeleton || "";
-      const key = `${method} ${pt}${qs}`;
+        const origin = e.origin;
+        if (!next.has(origin)) next.set(origin, new Map());
 
-      const statusCounts = e.statusCounts && typeof e.statusCounts === "object" ? e.statusCounts : {};
-      const statuses = new Set(Array.isArray(e.statuses) ? e.statuses.filter(n => Number.isFinite(n)) : []);
+        const method = (e.method || "GET").toUpperCase();
+        const pt = e.pathTemplate || "/";
+        const qs = e.querySkeleton || "";
+        const key = `${method} ${pt}${qs}`;
 
-      next.get(origin).set(key, {
-        method,
-        pathTemplate: pt,
-        querySkeleton: qs,
-        types: new Set(),             // CSV doesn’t include this; keep empty
-        statuses,
-        statusCounts,
-        hits: Number.isFinite(e.hits) ? e.hits : 0,
-        firstSeen: e.firstSeen || e.lastSeen || Date.now(),
-        lastSeen:  e.lastSeen  || e.firstSeen || Date.now(),
-        tested: !!e.tested,
-        note: e.note || ""
-      });
+        const statusCounts = e.statusCounts && typeof e.statusCounts === "object" ? e.statusCounts : {};
+        const statuses = new Set(Array.isArray(e.statuses) ? e.statuses.filter(n => Number.isFinite(n)) : []);
+
+        const record = {
+          method,
+          pathTemplate: pt,
+          querySkeleton: qs,
+          types: new Set(),
+          statuses,
+          statusCounts,
+          hits: Number.isFinite(e.hits) ? e.hits : 0,
+          firstSeen: e.firstSeen || e.lastSeen || Date.now(),
+          lastSeen:  e.lastSeen  || e.firstSeen || Date.now(),
+          tested: !!e.tested,
+          note: e.note || "",
+          formSummary: e.formSummary && typeof e.formSummary === "object" ? e.formSummary : null,
+          fieldsChecked: !!e.fieldsChecked,
+          fieldTests: e.fieldTests && typeof e.fieldTests === "object" ? e.fieldTests : {}
+        };
+
+        next.get(origin).set(key, record);
+      }
+
+      // replace current dataset and persist
+      endpoints = next;
+      saveSoon();
+      updateBadge();
+
+      sendResponse({ ok: true, imported: entries.length });
+    } catch (err) {
+      console.error("[SiteCrawler] importCsv failed:", err);
+      sendResponse({ ok: false, error: String(err) });
     }
-
-    // Replace current dataset and persist
-    endpoints = next;
-    saveSoon();
-    updateBadge();
-
-    sendResponse({ ok: true, imported: entries.length });
-  } catch (err) {
-    console.error("[SiteCrawler] importCsv failed:", err);
-    sendResponse({ ok: false, error: String(err) });
+    return true; // keep the message channel open for async sendResponse
   }
-  return true; // keep the message channel open for async sendResponse
-}
-
 });
 
 chrome.runtime.onInstalled.addListener(updateBadge);

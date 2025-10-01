@@ -1,4 +1,3 @@
-// popup.js
 document.addEventListener("DOMContentLoaded", () => {
   const toggleEl = document.getElementById("toggleEl");
   const hostEl = document.getElementById("hostEl");
@@ -10,71 +9,53 @@ document.addEventListener("DOMContentLoaded", () => {
   const exportEl = document.getElementById("exportEl");
   const resetEl = document.getElementById("resetEl");
   const markVisibleTestedEl = document.getElementById("markVisibleTestedEl");
-  const importBtnEl = document.getElementById("importBtnEl");   // present in popup & panel
-  const importEl = document.getElementById("importEl");         // present in panel only
+  const importBtnEl = document.getElementById("importBtnEl");
+  const importEl = document.getElementById("importEl"); // only present in panel
   const treeEl = document.getElementById("treeEl");
   const detailEl = document.getElementById("detailEl");
   const openWindowEl = document.getElementById("openWindowEl");
 
-  // Open in separate window (panel)
   if (openWindowEl) {
     openWindowEl.addEventListener("click", () => {
       try {
         chrome.windows.create(
-          {
-            url: chrome.runtime.getURL("panel.html"),
-            type: "popup",
-            width: 1280,
-            height: 820
-          },
-          () => {
-            if (chrome.runtime.lastError) {
-              console.warn("Open panel failed:", chrome.runtime.lastError.message);
-            }
-          }
+          { url: chrome.runtime.getURL("panel.html"), type: "popup", width: 1280, height: 820 },
+          () => { if (chrome.runtime.lastError) console.warn("Open panel failed:", chrome.runtime.lastError.message); }
         );
-      } catch (e) {
-        console.warn("Open panel threw:", e);
-      }
+      } catch (e) { console.warn("Open panel threw:", e); }
     });
   }
 
-  const expandedMap = new Map(); // "<origin> /a/b" -> expanded? (default true)
+  const expandedMap = new Map();
   let pollTimer = null;
-  let snapshot = {};       // { origin: [records] }
-  let selectedKey = null;  // `${origin}|||${method} ${path}${qs}`
+  let snapshot = {};
+  let selectedKey = null;
   let savedHostElValue = "";
   let savedFilters = { search:"", method:"", statusCode:"", tested:"", hideAssets:false };
 
   exportEl.onclick = exportCSV;
   resetEl.onclick = () => {
-  chrome.runtime.sendMessage({ type:"resetData" }, () => {
-    snapshot = {};
-    selectedKey = null;
-    treeEl.replaceChildren();
-    detailEl.replaceChildren();
-  });
-};
-
+    chrome.runtime.sendMessage({ type:"resetData" }, () => {
+      snapshot = {};
+      selectedKey = null;
+      treeEl.replaceChildren();
+      detailEl.replaceChildren();
+    });
+  };
   markVisibleTestedEl.onclick = markVisibleVisible;
 
-  // Import wiring: panel (inline) vs popup (open import.html)
   if (importBtnEl) {
     if (importEl) {
-      // PANEL: inline import via hidden file input
       importBtnEl.onclick = () => importEl.click();
       importEl.onchange = handleImportInline;
     } else {
-      // POPUP: open import.html in a new tab (better UX/CSP-safe)
-      importBtnEl.onclick = () =>
-        chrome.tabs.create({ url: chrome.runtime.getURL("import.html") });
+      importBtnEl.onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL("import.html") });
     }
   }
 
   init();
 
   function init(){
-    // Restore persisted UI selections
     chrome.storage.local.get(["sc_ui_host","sc_ui_filters"], ({ sc_ui_host, sc_ui_filters }) => {
       savedHostElValue = sc_ui_host || "";
       if (sc_ui_filters && typeof sc_ui_filters === "object") {
@@ -86,37 +67,29 @@ document.addEventListener("DOMContentLoaded", () => {
           hideAssets: !!sc_ui_filters.hideAssets
         };
       }
-
-      // Apply saved filters to UI
       if (searchEl)       searchEl.value = savedFilters.search;
       if (methodEl)       methodEl.value = savedFilters.method;
       if (testedFilterEl) testedFilterEl.value = savedFilters.tested;
       if (hideAssetsEl)   hideAssetsEl.checked = !!savedFilters.hideAssets;
-      // statusCodeEl is applied after we hydrate options (dynamic)
 
-      // Persist once so hydrations don't clobber state
       saveFilters();
 
-      // Sync capture toggle, then start polling
       chrome.runtime.sendMessage({ type:"getState" }, (resp)=>{
         toggleEl.checked = !!resp?.enabled;
         startPolling();
       });
     });
 
-    // Capture on/off
     toggleEl.addEventListener("change", ()=>{
       chrome.runtime.sendMessage({ type:"setEnabled", enabled: toggleEl.checked });
     });
 
-    // Filters
     [searchEl, methodEl, statusCodeEl, testedFilterEl].forEach(el => {
       if (!el) return;
       el.addEventListener("input", () => { saveFilters(); renderTree(); });
     });
     if (hideAssetsEl) hideAssetsEl.addEventListener("input", () => { saveFilters(); renderTree(); });
 
-    // Persist host selection
     hostEl.addEventListener("input", () => {
       chrome.storage.local.set({ sc_ui_host: hostEl.value });
       savedHostElValue = hostEl.value;
@@ -143,7 +116,6 @@ document.addEventListener("DOMContentLoaded", () => {
         hydrateHostDropdown();
         hydrateStatusDropdown();
         renderTree();
-        // only re-render details if the textarea isn't focused
         if (selectedKey && !document.activeElement.matches("#detailNoteEl, #detailNoteEl *")) {
           renderDetailsByKey(selectedKey);
         }
@@ -154,6 +126,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function hydrateHostDropdown(){
     const hosts = Object.keys(snapshot).sort();
     const preferred = hostEl.value || savedHostElValue;
+
     hostEl.innerHTML = `<option value="">All hosts (${hosts.length})</option>` +
       hosts.map(h=>`<option>${h}</option>`).join("");
 
@@ -179,11 +152,15 @@ document.addEventListener("DOMContentLoaded", () => {
     const prev = statusCodeEl.value || savedFilters.statusCode;
     statusCodeEl.innerHTML = `<option value="">Any Status</option>` +
       sorted.map(c => `<option>${c}</option>`).join("");
-    if (prev && sorted.includes(prev)) {
-      statusCodeEl.value = prev;
-    } else if (prev && !sorted.includes(prev)) {
-      statusCodeEl.value = "";
-    }
+    if (prev && sorted.includes(prev)) { statusCodeEl.value = prev; }
+    else if (prev && !sorted.includes(prev)) { statusCodeEl.value = ""; }
+  }
+
+  function safeHasForms(rec){
+    const fs = rec && rec.formSummary;
+    const hasFormsArr = fs && Array.isArray(fs.forms) && fs.forms.length > 0;
+    const hasLooseArr = fs && Array.isArray(fs.looseFields) && fs.looseFields.length > 0;
+    return !!(hasFormsArr || hasLooseArr);
   }
 
   function renderTree(){
@@ -191,7 +168,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const q = (searchEl.value||"").toLowerCase();
     const methodFilter = (methodEl.value||"").toUpperCase();
     const codeFilter = statusCodeEl.value;
-    const testedFilter = testedFilterEl.value; // "", "untested", "tested"
+    const testedFilter = testedFilterEl.value;
     const hideAssets = !!(hideAssetsEl && hideAssetsEl.checked);
 
     const container = document.createElement("div");
@@ -218,7 +195,6 @@ document.addEventListener("DOMContentLoaded", () => {
       hostHdr.textContent = origin;
       container.appendChild(hostHdr);
 
-      // Build a path tree from filtered records
       const root = { children:new Map(), leaves:[] };
       for (const r of recs){
         const full = r.pathTemplate.replace(/^\//,"");
@@ -236,7 +212,7 @@ document.addEventListener("DOMContentLoaded", () => {
       container.appendChild(ul);
 
       const renderNode = (node, parentEl, prefix=[]) => {
-        // folders
+        // Folders
         for (const [name, child] of [...node.children.entries()].sort((a,b)=>a[0].localeCompare(b[0]))){
           const li = document.createElement("li");
           const pathKey = `${origin} /${prefix.concat(name).join("/")}`;
@@ -261,7 +237,7 @@ document.addEventListener("DOMContentLoaded", () => {
           if (open) renderNode(child, childUl, prefix.concat(name));
         }
 
-        // leaves (endpoints)
+        // Leaves (endpoints)
         for (const r of node.leaves.sort((a,b)=>a.method.localeCompare(b.method))){
           const leaf = document.createElement("li");
           const line = document.createElement("div");
@@ -270,11 +246,22 @@ document.addEventListener("DOMContentLoaded", () => {
           const recKey = `${r.method} ${r.pathTemplate}${r.querySkeleton||""}`;
           const key = `${origin}|||${recKey}`;
           line.dataset.key = key;
+
+          // Pill: FIELDS (orange) if forms exist and not checked; FIELDS✓ (green) if checked; none if no forms
+          const hasForms = safeHasForms(r);
+          const isFieldsChecked = !!r.fieldsChecked;
+          const formsIndicator = hasForms
+            ? (isFieldsChecked
+                ? `<span class="pill ok" title="Fields checked">FIELDS✓</span>`
+                : `<span class="pill warn" title="Form fields detected — review fields">FIELDS</span>`)
+            : "";
+
           line.innerHTML = `
             <input type="checkbox" class="chk-tested" ${r.tested ? "checked" : ""} title="Mark tested" style="vertical-align:middle; margin-right:6px;" />
             <span class="method ${r.method}">${r.method}</span>
             <span>${escapeHtml(pathFull || "/")}</span>
             <span class="muted" style="margin-left:6px;">(${r.hits} hits)</span>
+            ${formsIndicator}
             ${renderStatusPills(r)}
           `;
           if (selectedKey === key) line.classList.add("active");
@@ -289,7 +276,6 @@ document.addEventListener("DOMContentLoaded", () => {
           leaf.appendChild(line);
           parentEl.appendChild(leaf);
 
-          // checkbox handler
           const chk = line.querySelector(".chk-tested");
           chk.addEventListener("click", (ev)=>{
             ev.stopPropagation();
@@ -305,7 +291,6 @@ document.addEventListener("DOMContentLoaded", () => {
     treeEl.replaceChildren(container);
   }
 
-  // Static asset detection for filtering
   function isStaticAsset(r){
     const p = (r.pathTemplate || "").toLowerCase();
     const exts = [
@@ -350,17 +335,29 @@ document.addEventListener("DOMContentLoaded", () => {
           .join(", ")
       : "";
 
+    const hasForms = safeHasForms(rec);
+    const isFieldsChecked = !!rec.fieldsChecked;
+
     detailEl.innerHTML = `
       <div>
         <h3 style="margin-top:0">${escapeHtml(rec.method)} ${escapeHtml(url)}</h3>
-        <div class="kv" style="display:grid; grid-template-columns: 120px 1fr; gap:6px; margin-bottom:8px;">
+        <div class="kv" style="display:grid; grid-template-columns: 140px 1fr; gap:6px; margin-bottom:8px;">
           <div>Hits</div><div>${rec.hits}</div>
           <div>Status mix</div><div>${escapeHtml(statusLines || "—")}</div>
           <div>Tested</div>
           <div><input id="detailTestedEl" type="checkbox" ${rec.tested ? "checked" : ""}></div>
+          ${hasForms ? `
+            <div>Fields checked</div>
+            <div><input id="detailFieldsCheckedEl" type="checkbox" ${isFieldsChecked ? "checked" : ""}></div>
+          ` : ""}
           <div>Note</div>
           <div><textarea id="detailNoteEl" rows="3" style="width:100%;"></textarea></div>
         </div>
+        ${hasForms ? `
+          <div class="row-actions" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">
+            <button id="markAllFieldTestsEl">Mark all tests passed</button>
+          </div>
+        ` : ""}
         <div class="row-actions" style="display:flex; gap:6px; flex-wrap:wrap;">
           <button data-copy="${escapeAttr(url)}">Copy URL</button>
           <button data-copy="${escapeAttr(rec.pathTemplate + (rec.querySkeleton||""))}">Copy Path</button>
@@ -370,14 +367,16 @@ document.addEventListener("DOMContentLoaded", () => {
       </div>
     `;
 
-    // copy handlers
+    // wire copy buttons
     detailEl.querySelectorAll("[data-copy]").forEach(b=>{
       b.addEventListener("click", ()=> navigator.clipboard.writeText(b.dataset.copy));
     });
 
-    // tested + note
+    // wire tested + fieldsChecked + note
     const noteEl = detailEl.querySelector("#detailNoteEl");
     const testedBox = detailEl.querySelector("#detailTestedEl");
+    const fieldsBox = detailEl.querySelector("#detailFieldsCheckedEl");
+
     if (noteEl) {
       noteEl.value = rec.note || "";
       noteEl.addEventListener("change", ()=>{
@@ -389,9 +388,146 @@ document.addEventListener("DOMContentLoaded", () => {
       testedBox.addEventListener("change", ()=>{
         chrome.runtime.sendMessage({ type:"setTested", origin, recKey, tested: testedBox.checked });
         rec.tested = testedBox.checked;
-        renderTree(); // reflect state in tree
+        renderTree();
       });
     }
+    if (fieldsBox) {
+      fieldsBox.addEventListener("change", ()=>{
+        chrome.runtime.sendMessage({ type:"setFieldsChecked", origin, recKey, checked: fieldsBox.checked });
+        rec.fieldsChecked = fieldsBox.checked;
+        renderTree(); // updates pill
+      });
+    }
+
+    // Forms section with per-field tests
+    if (hasForms && rec.formSummary) {
+      const fs = rec.formSummary;
+      const testsList = ["xss","sqli","ssrf","file","auth"]; // canonical test keys
+      const testsLabel = { xss:"XSS", sqli:"SQLi", ssrf:"SSRF", file:"File", auth:"Auth" };
+
+      // Ensure local object exists to prevent undefined errors
+      rec.fieldTests = rec.fieldTests || {};
+
+      const blocks = [];
+
+      if (Array.isArray(fs.forms)) {
+        fs.forms.forEach((f, i) => {
+          const formFields = (f.fields || []);
+          const fieldRows = formFields.map(ff => renderFieldRow(ff, i, testsList, testsLabel, rec, origin, recKey)).join("");
+          blocks.push(`
+            <div style="margin:10px 0; padding:8px; border:1px solid var(--border); border-radius:8px;">
+              <div class="muted" style="margin-bottom:6px;">Form ${i+1} — ${escapeHtml(f.method)} ${escapeHtml(f.actionPathTemplate)} ${f.enctype ? `(${escapeHtml(f.enctype)})` : ""}</div>
+              <table style="width:100%; border-collapse:collapse;">
+                <thead>
+                  <tr>
+                    <th style="text-align:left; padding:4px 6px; border-bottom:1px solid var(--border);">Field</th>
+                    ${testsList.map(t=>`<th style="text-align:center; padding:4px 6px; border-bottom:1px solid var(--border);">${testsLabel[t]}</th>`).join("")}
+                  </tr>
+                </thead>
+                <tbody>${fieldRows || `<tr><td colspan="${1+testsList.length}" class="muted" style="padding:6px;">(no fields detected)</td></tr>`}</tbody>
+              </table>
+            </div>
+          `);
+        });
+      }
+
+      if (Array.isArray(fs.looseFields) && fs.looseFields.length) {
+        const fieldRows = fs.looseFields.map(ff => renderFieldRow(ff, "loose", testsList, testsLabel, rec, origin, recKey)).join("");
+        blocks.push(`
+          <div style="margin:10px 0; padding:8px; border:1px solid var(--border); border-radius:8px;">
+            <div class="muted" style="margin-bottom:6px;">Inputs outside a &lt;form&gt;</div>
+            <table style="width:100%; border-collapse:collapse;">
+              <thead>
+                <tr>
+                  <th style="text-align:left; padding:4px 6px; border-bottom:1px solid var(--border);">Field</th>
+                  ${testsList.map(t=>`<th style="text-align:center; padding:4px 6px; border-bottom:1px solid var(--border);">${testsLabel[t]}</th>`).join("")}
+                </tr>
+              </thead>
+              <tbody>${fieldRows}</tbody>
+            </table>
+          </div>
+        `);
+      }
+
+      detailEl.insertAdjacentHTML("beforeend", `
+        <div style="margin-top:12px;">
+          <h3 style="margin:0 0 6px;">Form fields</h3>
+          ${blocks.join("") || "<div class='muted'>(none)</div>"}
+        </div>
+      `);
+
+      // Wire the newly inserted checkbox inputs
+      detailEl.querySelectorAll("input[data-fieldkey][data-test]").forEach(box=>{
+        box.addEventListener("change", ()=>{
+          const fieldKey = box.getAttribute("data-fieldkey");
+          const test = box.getAttribute("data-test");
+          const val = !!box.checked;
+          // Update local snapshot
+          rec.fieldTests[fieldKey] = rec.fieldTests[fieldKey] || {};
+          rec.fieldTests[fieldKey][test] = val;
+          // Persist
+          chrome.runtime.sendMessage({ type:"setFieldTest", origin, recKey, fieldKey, test, value: val });
+        });
+      });
+
+      // Mark all tests helper
+      const markAllBtn = detailEl.querySelector("#markAllFieldTestsEl");
+      if (markAllBtn) {
+        markAllBtn.addEventListener("click", ()=>{
+          detailEl.querySelectorAll("input[data-fieldkey][data-test]").forEach(box=>{
+            if (!box.checked) {
+              box.checked = true;
+              const fieldKey = box.getAttribute("data-fieldkey");
+              const test = box.getAttribute("data-test");
+              rec.fieldTests[fieldKey] = rec.fieldTests[fieldKey] || {};
+              rec.fieldTests[fieldKey][test] = true;
+              chrome.runtime.sendMessage({ type:"setFieldTest", origin, recKey, fieldKey, test, value: true });
+            }
+          });
+          // and mark overall as checked
+          if (fieldsBox && !fieldsBox.checked) {
+            fieldsBox.checked = true;
+            rec.fieldsChecked = true;
+            chrome.runtime.sendMessage({ type:"setFieldsChecked", origin, recKey, checked: true });
+          }
+          renderTree();
+        });
+      }
+    }
+  }
+
+  function renderFieldRow(ff, formIndex, testsList, testsLabel, rec, origin, recKey){
+    const name = ff.name || "(unnamed)";
+    const type = (ff.type || "text").toLowerCase();
+    const key = fieldKeyFor(ff, formIndex);
+    rec.fieldTests = rec.fieldTests || {};
+    const state = rec.fieldTests[key] || {};
+
+    const cells = testsList.map(t => {
+      const checked = state[t] ? "checked" : "";
+      return `<td style="text-align:center; padding:4px 6px; border-bottom:1px solid var(--border);">
+        <input type="checkbox" data-fieldkey="${escapeAttr(key)}" data-test="${escapeAttr(t)}" ${checked} />
+      </td>`;
+    }).join("");
+
+    const badges = [];
+    if (ff.required) badges.push("required");
+    if (ff.multiple) badges.push("multiple");
+    if (ff.accept)   badges.push(`accept=${ff.accept}`);
+
+    return `<tr>
+      <td style="padding:4px 6px; border-bottom:1px solid var(--border);">
+        <code>${escapeHtml(name)}</code> <span class="muted">(${escapeHtml(type)})</span>
+        ${badges.length ? `<span class="muted">— ${escapeHtml(badges.join(", "))}</span>` : ""}
+      </td>
+      ${cells}
+    </tr>`;
+  }
+
+  function fieldKeyFor(ff, formIndex){
+    const name = (ff.name || "").trim() || "(unnamed)";
+    const type = (ff.type || "text").toLowerCase();
+    return `form${String(formIndex)}:${name}:${type}`;
   }
 
   function renderDetailsByKey(key){
@@ -400,7 +536,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (rec) renderDetails(rec, origin);
   }
 
-  // --- Bulk mark visible ---
   function collectVisibleKeys(){
     const hostFilter = hostEl.value;
     const q = (searchEl.value||"").toLowerCase();
@@ -435,7 +570,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const items = collectVisibleKeys();
     if (!items.length) return;
     chrome.runtime.sendMessage({ type:"setManyTested", items, tested: true }, ()=>{
-      // Optimistic update
       for (const {origin, recKey} of items){
         const arr = snapshot[origin] || [];
         const rec = arr.find(r => (r.method+" "+r.pathTemplate+(r.querySkeleton||"")) === recKey);
@@ -446,7 +580,6 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // --- Export CSV ---
   function exportCSV(){
     const rows = [];
     for (const [origin, recs] of Object.entries(snapshot)){
@@ -463,13 +596,16 @@ document.addEventListener("DOMContentLoaded", () => {
           statusCounts,
           statuses: (r.statuses||[]).join("|"),
           tested: r.tested ? 1 : 0,
+          fieldsChecked: r.fieldsChecked ? 1 : 0,
+          fieldTests: r.fieldTests ? JSON.stringify(r.fieldTests) : "",
           note: r.note || "",
           lastSeen: new Date(r.lastSeen).toISOString()
         });
       }
     }
     const header = Object.keys(rows[0]||{
-      origin:"",method:"",path:"",query:"",hits:0,statusCounts:"",statuses:"",tested:0,note:"",lastSeen:""
+      origin:"",method:"",path:"",query:"",hits:0,statusCounts:"",statuses:"",
+      tested:0, fieldsChecked:0, fieldTests:"", note:"", lastSeen:""
     });
     const csv = [header.join(",")]
       .concat(rows.map(r=>header.map(h=>csvEscape(r[h])).join(",")))
@@ -479,7 +615,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // ===== Inline import (panel) =====
   function handleImportInline(){
-    const file = importEl && importEl.files && importEl.files[0];
+    const file = importEl.files && importEl.files[0];
     if (!file) return;
     file.text().then(text=>{
       const rows = parseCsvToRows(text);
@@ -499,11 +635,10 @@ document.addEventListener("DOMContentLoaded", () => {
       console.error(err);
       alert("Failed to read CSV.");
     }).finally(()=>{
-      if (importEl) importEl.value = ""; // reset file input
+      importEl.value = ""; // reset file input
     });
   }
 
-  // --- CSV helpers (robust to quotes/commas/newlines) ---
   function parseCsvToRows(csv){
     const lines = csv.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
     while (lines.length && !lines[lines.length-1].trim()) lines.pop();
@@ -552,8 +687,17 @@ document.addEventListener("DOMContentLoaded", () => {
         .filter(n=>Number.isFinite(n));
 
       const tested = String(r.tested).trim()==="1" || /^true$/i.test(String(r.tested));
+      const fieldsChecked = String(r.fieldsChecked).trim()==="1" || /^true$/i.test(String(r.fieldsChecked));
       const lastSeen = Date.parse(r.lastSeen) || Date.now();
       const hits = parseInt(r.hits,10);
+
+      let fieldTests = {};
+      if (r.fieldTests) {
+        try {
+          const parsed = JSON.parse(r.fieldTests);
+          if (parsed && typeof parsed === "object") fieldTests = parsed;
+        } catch {}
+      }
 
       return {
         origin: r.origin || "",
@@ -566,12 +710,14 @@ document.addEventListener("DOMContentLoaded", () => {
         firstSeen: lastSeen,
         lastSeen,
         tested,
+        fieldsChecked,
+        fieldTests,
         note: r.note || ""
       };
     }).filter(e=>e.origin && e.method && e.pathTemplate!=null);
   }
 
-  // --- generic helpers ---
+  // --- helpers ---
   function pathToRegex(pathTmpl){
     const esc = pathTmpl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return "^" + esc.replace(/:id/g,"[^/]+") + "$";
