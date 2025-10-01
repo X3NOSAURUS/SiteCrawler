@@ -325,176 +325,244 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderDetails(rec, origin){
-    const url = origin + rec.pathTemplate + (rec.querySkeleton||"");
-    const recKey = `${rec.method} ${rec.pathTemplate}${rec.querySkeleton||""}`;
+  const url = origin + rec.pathTemplate + (rec.querySkeleton||"");
+  const recKey = `${rec.method} ${rec.pathTemplate}${rec.querySkeleton||""}`;
 
-    const statusLines = rec.statusCounts
-      ? Object.entries(rec.statusCounts)
-          .sort(([a],[b]) => parseInt(a)-parseInt(b))
-          .map(([c,n]) => `${c} ×${n}`)
-          .join(", ")
-      : "";
+  const statusLines = rec.statusCounts
+    ? Object.entries(rec.statusCounts)
+        .sort(([a],[b]) => parseInt(a)-parseInt(b))
+        .map(([c,n]) => `${c} ×${n}`)
+        .join(", ")
+    : "";
 
-    const hasForms = safeHasForms(rec);
-    const isFieldsChecked = !!rec.fieldsChecked;
+  const TESTS = ["xss","sqli","ssrf","file","auth"]; // test set
+  const formSummary = rec.formSummary || { forms: [], looseFields: [] };
 
-    detailEl.innerHTML = `
-      <div>
-        <h3 style="margin-top:0">${escapeHtml(rec.method)} ${escapeHtml(url)}</h3>
-        <div class="kv" style="display:grid; grid-template-columns: 140px 1fr; gap:6px; margin-bottom:8px;">
-          <div>Hits</div><div>${rec.hits}</div>
-          <div>Status mix</div><div>${escapeHtml(statusLines || "—")}</div>
-          <div>Tested</div>
-          <div><input id="detailTestedEl" type="checkbox" ${rec.tested ? "checked" : ""}></div>
-          ${hasForms ? `
-            <div>Fields checked</div>
-            <div><input id="detailFieldsCheckedEl" type="checkbox" ${isFieldsChecked ? "checked" : ""}></div>
-          ` : ""}
-          <div>Note</div>
-          <div><textarea id="detailNoteEl" rows="3" style="width:100%;"></textarea></div>
+  const renderFieldRow = (field, formIndex) => {
+    const fieldName = field.name || "(unnamed)";
+    const fieldKey  = `${formIndex}|${fieldName}`; // unique within record
+    const current   = (rec.fieldTests && rec.fieldTests[fieldKey]) || {};
+    const testBoxes = TESTS.map(t => {
+      const checked = !!current[t];
+      return `
+        <label style="margin-right:8px;">
+          <input type="checkbox"
+                 class="field-test"
+                 data-field-key="${escapeAttr(fieldKey)}"
+                 data-test="${t}"
+                 ${checked ? "checked" : ""} />
+          ${t.toUpperCase()}
+        </label>`;
+    }).join("");
+
+    return `
+      <div style="padding:8px; border:1px solid var(--border); border-radius:8px; margin-bottom:6px;">
+        <div style="font-weight:600; margin-bottom:4px;">
+          ${escapeHtml(fieldName)} <span class="muted">(${escapeHtml(field.type||"input")}${field.required?" • required":""})</span>
         </div>
-        ${hasForms ? `
-          <div class="row-actions" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">
-            <button id="markAllFieldTestsEl">Mark all tests passed</button>
-          </div>
-        ` : ""}
-        <div class="row-actions" style="display:flex; gap:6px; flex-wrap:wrap;">
-          <button data-copy="${escapeAttr(url)}">Copy URL</button>
-          <button data-copy="${escapeAttr(rec.pathTemplate + (rec.querySkeleton||""))}">Copy Path</button>
-          <button data-copy="${escapeAttr(pathToRegex(rec.pathTemplate))}">Copy Regex</button>
-          <button data-copy="${escapeAttr(`curl -i -X ${rec.method} '${url}'`)}">Copy curl</button>
+        <div>${testBoxes}</div>
+      </div>`;
+  };
+
+  const formsHtml = (formSummary.forms||[]).map((f, idx) => {
+    const fieldsHtml = (f.fields||[]).map(field => renderFieldRow(field, `form:${idx}`)).join("");
+    return `
+      <div style="margin:10px 0; padding:10px; border:1px solid var(--border); border-radius:10px;">
+        <div class="muted" style="margin-bottom:6px;">
+          FORM • ${escapeHtml((f.method||"GET").toUpperCase())} → ${escapeHtml(f.actionPathTemplate||"/")} ${f.enctype?`• ${escapeHtml(f.enctype)}`:""}
         </div>
+        ${fieldsHtml || `<div class="muted">No fields detected in this form.</div>`}
+      </div>`;
+  }).join("");
+
+  const looseHtml = (formSummary.looseFields||[]).length
+    ? `
+      <div style="margin:10px 0; padding:10px; border:1px solid var(--border); border-radius:10px;">
+        <div class="muted" style="margin-bottom:6px;">LOOSE FIELDS (outside forms)</div>
+        ${(formSummary.looseFields||[]).map(field => renderFieldRow(field, "loose")).join("")}
+      </div>`
+    : "";
+
+  const hasAnyFields = ((formSummary.forms||[]).some(f => (f.fields||[]).length) || (formSummary.looseFields||[]).length);
+
+  detailEl.innerHTML = `
+    <div>
+      <h3 style="margin-top:0">${escapeHtml(rec.method)} ${escapeHtml(url)}</h3>
+
+      <div class="kv" style="display:grid; grid-template-columns: 120px 1fr; gap:6px; margin-bottom:8px;">
+        <div>Hits</div><div>${rec.hits}</div>
+        <div>Status mix</div><div>${escapeHtml(statusLines || "—")}</div>
+
+        <div>Tested</div>
+        <div><input id="detailTestedEl" type="checkbox" ${rec.tested ? "checked" : ""}></div>
+
+        <div>Fields checked</div>
+        <div>
+          <input id="detailFieldsCheckedEl" type="checkbox" ${rec.fieldsChecked ? "checked" : ""} />
+          <span class="muted" id="detailFieldsNoteEl" style="margin-left:6px;"></span>
+        </div>
+
+        <div>Note</div>
+        <div><textarea id="detailNoteEl" rows="3" style="width:100%;"></textarea></div>
       </div>
-    `;
 
-    // wire copy buttons
-    detailEl.querySelectorAll("[data-copy]").forEach(b=>{
-      b.addEventListener("click", ()=> navigator.clipboard.writeText(b.dataset.copy));
-    });
-
-    // wire tested + fieldsChecked + note
-    const noteEl = detailEl.querySelector("#detailNoteEl");
-    const testedBox = detailEl.querySelector("#detailTestedEl");
-    const fieldsBox = detailEl.querySelector("#detailFieldsCheckedEl");
-
-    if (noteEl) {
-      noteEl.value = rec.note || "";
-      noteEl.addEventListener("change", ()=>{
-        chrome.runtime.sendMessage({ type:"setNote", origin, recKey, note: noteEl.value || "" });
-        rec.note = noteEl.value || "";
-      });
-    }
-    if (testedBox) {
-      testedBox.addEventListener("change", ()=>{
-        chrome.runtime.sendMessage({ type:"setTested", origin, recKey, tested: testedBox.checked });
-        rec.tested = testedBox.checked;
-        renderTree();
-      });
-    }
-    if (fieldsBox) {
-      fieldsBox.addEventListener("change", ()=>{
-        chrome.runtime.sendMessage({ type:"setFieldsChecked", origin, recKey, checked: fieldsBox.checked });
-        rec.fieldsChecked = fieldsBox.checked;
-        renderTree(); // updates pill
-      });
-    }
-
-    // Forms section with per-field tests
-    if (hasForms && rec.formSummary) {
-      const fs = rec.formSummary;
-      const testsList = ["xss","sqli","ssrf","file","auth"]; // canonical test keys
-      const testsLabel = { xss:"XSS", sqli:"SQLi", ssrf:"SSRF", file:"File", auth:"Auth" };
-
-      // Ensure local object exists to prevent undefined errors
-      rec.fieldTests = rec.fieldTests || {};
-
-      const blocks = [];
-
-      if (Array.isArray(fs.forms)) {
-        fs.forms.forEach((f, i) => {
-          const formFields = (f.fields || []);
-          const fieldRows = formFields.map(ff => renderFieldRow(ff, i, testsList, testsLabel, rec, origin, recKey)).join("");
-          blocks.push(`
-            <div style="margin:10px 0; padding:8px; border:1px solid var(--border); border-radius:8px;">
-              <div class="muted" style="margin-bottom:6px;">Form ${i+1} — ${escapeHtml(f.method)} ${escapeHtml(f.actionPathTemplate)} ${f.enctype ? `(${escapeHtml(f.enctype)})` : ""}</div>
-              <table style="width:100%; border-collapse:collapse;">
-                <thead>
-                  <tr>
-                    <th style="text-align:left; padding:4px 6px; border-bottom:1px solid var(--border);">Field</th>
-                    ${testsList.map(t=>`<th style="text-align:center; padding:4px 6px; border-bottom:1px solid var(--border);">${testsLabel[t]}</th>`).join("")}
-                  </tr>
-                </thead>
-                <tbody>${fieldRows || `<tr><td colspan="${1+testsList.length}" class="muted" style="padding:6px;">(no fields detected)</td></tr>`}</tbody>
-              </table>
-            </div>
-          `);
-        });
-      }
-
-      if (Array.isArray(fs.looseFields) && fs.looseFields.length) {
-        const fieldRows = fs.looseFields.map(ff => renderFieldRow(ff, "loose", testsList, testsLabel, rec, origin, recKey)).join("");
-        blocks.push(`
-          <div style="margin:10px 0; padding:8px; border:1px solid var(--border); border-radius:8px;">
-            <div class="muted" style="margin-bottom:6px;">Inputs outside a &lt;form&gt;</div>
-            <table style="width:100%; border-collapse:collapse;">
-              <thead>
-                <tr>
-                  <th style="text-align:left; padding:4px 6px; border-bottom:1px solid var(--border);">Field</th>
-                  ${testsList.map(t=>`<th style="text-align:center; padding:4px 6px; border-bottom:1px solid var(--border);">${testsLabel[t]}</th>`).join("")}
-                </tr>
-              </thead>
-              <tbody>${fieldRows}</tbody>
-            </table>
-          </div>
-        `);
-      }
-
-      detailEl.insertAdjacentHTML("beforeend", `
-        <div style="margin-top:12px;">
-          <h3 style="margin:0 0 6px;">Form fields</h3>
-          ${blocks.join("") || "<div class='muted'>(none)</div>"}
+      ${hasAnyFields ? `
+        <div style="margin:10px 0 6px; font-weight:600;">Field tests</div>
+        ${formsHtml}
+        ${looseHtml}
+        <div class="row-actions" style="display:flex; gap:6px; flex-wrap:wrap;">
+          <button id="btnMarkAllTests" type="button">Mark all tests passed</button>
         </div>
-      `);
+      ` : `<div class="muted">No form fields detected on this endpoint.</div>`}
 
-      // Wire the newly inserted checkbox inputs
-      detailEl.querySelectorAll("input[data-fieldkey][data-test]").forEach(box=>{
-        box.addEventListener("change", ()=>{
-          const fieldKey = box.getAttribute("data-fieldkey");
-          const test = box.getAttribute("data-test");
-          const val = !!box.checked;
-          // Update local snapshot
+      <div class="row-actions" style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;">
+        <button data-copy="${escapeAttr(url)}">Copy URL</button>
+        <button data-copy="${escapeAttr(rec.pathTemplate + (rec.querySkeleton||""))}">Copy Path</button>
+        <button data-copy="${escapeAttr(pathToRegex(rec.pathTemplate))}">Copy Regex</button>
+        <button data-copy="${escapeAttr(`curl -i -X ${rec.method} '${url}'`)}">Copy curl</button>
+      </div>
+    </div>
+  `;
+
+  // Copy handlers
+  detailEl.querySelectorAll("[data-copy]").forEach(b=>{
+    b.addEventListener("click", ()=> navigator.clipboard.writeText(b.dataset.copy));
+  });
+
+  // Note + Tested
+  const noteEl      = detailEl.querySelector("#detailNoteEl");
+  const testedBox   = detailEl.querySelector("#detailTestedEl");
+  const fieldsBox   = detailEl.querySelector("#detailFieldsCheckedEl");
+  const fieldsNote  = detailEl.querySelector("#detailFieldsNoteEl");
+
+  if (noteEl) {
+    noteEl.value = rec.note || "";
+    noteEl.addEventListener("change", ()=>{
+      chrome.runtime.sendMessage({ type:"setNote", origin, recKey, note: noteEl.value || "" });
+      rec.note = noteEl.value || "";
+    });
+  }
+
+  if (testedBox) {
+    testedBox.addEventListener("change", ()=>{
+      chrome.runtime.sendMessage({ type:"setTested", origin, recKey, tested: testedBox.checked });
+      rec.tested = testedBox.checked;
+      renderTree(); // reflect in tree checkbox
+    });
+  }
+
+  // Wire field test checkboxes
+  bindFieldTestHandlers(rec, origin, recKey, () => {
+    const allDone = areAllFieldTestsComplete(rec);
+    if (!allDone) {
+      if (fieldsBox) {
+        fieldsBox.checked = false;
+        fieldsBox.disabled = true;
+      }
+      rec.fieldsChecked = false;
+      fieldsNote.textContent = "Complete all field test boxes to enable.";
+      renderTree();
+    } else {
+      if (fieldsBox) {
+        fieldsBox.disabled = false;
+      }
+      fieldsNote.textContent = "All per-field tests complete.";
+    }
+  });
+
+  const allDoneNow = areAllFieldTestsComplete(rec);
+  if (fieldsBox) {
+    fieldsBox.disabled = !allDoneNow;
+    if (rec.fieldsChecked && !allDoneNow) {
+      fieldsBox.checked = false;
+      rec.fieldsChecked = false;
+    } else {
+      fieldsBox.checked = !!rec.fieldsChecked && allDoneNow;
+    }
+
+    fieldsNote.textContent = allDoneNow
+      ? "All per-field tests complete."
+      : "Complete all field test boxes to enable.";
+
+    fieldsBox.addEventListener("change", ()=>{
+      const val = !!fieldsBox.checked && areAllFieldTestsComplete(rec);
+      fieldsBox.checked = val; // enforce
+      chrome.runtime.sendMessage({ type:"setFieldsChecked", origin, recKey, checked: val });
+      rec.fieldsChecked = val;
+      renderTree(); 
+    });
+  }
+
+  const btnAll = detailEl.querySelector("#btnMarkAllTests");
+  if (btnAll) {
+    btnAll.addEventListener("click", ()=>{
+      detailEl.querySelectorAll('input.field-test').forEach(cb => {
+        if (!cb.checked) {
+          cb.checked = true;
+          const fieldKey = cb.dataset.fieldKey;
+          const test     = cb.dataset.test;
+          chrome.runtime.sendMessage({ type:"setFieldTest", origin, recKey, fieldKey, test, value: true });
+          rec.fieldTests = rec.fieldTests || {};
           rec.fieldTests[fieldKey] = rec.fieldTests[fieldKey] || {};
-          rec.fieldTests[fieldKey][test] = val;
-          // Persist
-          chrome.runtime.sendMessage({ type:"setFieldTest", origin, recKey, fieldKey, test, value: val });
-        });
+          rec.fieldTests[fieldKey][test] = true;
+        }
       });
 
-      // Mark all tests helper
-      const markAllBtn = detailEl.querySelector("#markAllFieldTestsEl");
-      if (markAllBtn) {
-        markAllBtn.addEventListener("click", ()=>{
-          detailEl.querySelectorAll("input[data-fieldkey][data-test]").forEach(box=>{
-            if (!box.checked) {
-              box.checked = true;
-              const fieldKey = box.getAttribute("data-fieldkey");
-              const test = box.getAttribute("data-test");
-              rec.fieldTests[fieldKey] = rec.fieldTests[fieldKey] || {};
-              rec.fieldTests[fieldKey][test] = true;
-              chrome.runtime.sendMessage({ type:"setFieldTest", origin, recKey, fieldKey, test, value: true });
-            }
-          });
-          // and mark overall as checked
-          if (fieldsBox && !fieldsBox.checked) {
-            fieldsBox.checked = true;
-            rec.fieldsChecked = true;
-            chrome.runtime.sendMessage({ type:"setFieldsChecked", origin, recKey, checked: true });
-          }
-          renderTree();
-        });
+      if (fieldsBox) {
+        fieldsBox.disabled = false;
+        fieldsBox.checked  = true;
       }
-    }
+      chrome.runtime.sendMessage({ type:"setFieldsChecked", origin, recKey, checked: true });
+      rec.fieldsChecked = true;
+      renderTree();
+    });
   }
+}
+
+function bindFieldTestHandlers(rec, origin, recKey, onChange){
+  const boxes = detailEl.querySelectorAll('input.field-test');
+  boxes.forEach(cb => {
+    cb.addEventListener('change', () => {
+      const fieldKey = cb.dataset.fieldKey;
+      const test     = cb.dataset.test;
+      const value    = cb.checked;
+
+      chrome.runtime.sendMessage({ type:"setFieldTest", origin, recKey, fieldKey, test, value });
+
+      rec.fieldTests = rec.fieldTests || {};
+      rec.fieldTests[fieldKey] = rec.fieldTests[fieldKey] || {};
+      rec.fieldTests[fieldKey][test] = value;
+
+      if (!value) {
+        rec.fieldsChecked = false;
+      }
+
+      if (typeof onChange === "function") onChange();
+    });
+  });
+}
+
+function areAllFieldTestsComplete(rec){
+  const TESTS = ["xss","sqli","ssrf","file","auth"];
+  const fs = rec.formSummary || { forms: [], looseFields: [] };
+
+  const wantedKeys = [];
+  (fs.forms||[]).forEach((f, idx) => (f.fields||[]).forEach(field => {
+    const name = field.name || "(unnamed)";
+    wantedKeys.push(`form:${idx}|${name}`);
+  }));
+  (fs.looseFields||[]).forEach(field => {
+    const name = field.name || "(unnamed)";
+    wantedKeys.push(`loose|${name}`);
+  });
+  if (!wantedKeys.length) return false; 
+
+  const ft = rec.fieldTests || {};
+  return wantedKeys.every(k =>
+    TESTS.every(t => !!(ft[k] && ft[k][t] === true))
+  );
+}
+
 
   function renderFieldRow(ff, formIndex, testsList, testsLabel, rec, origin, recKey){
     const name = ff.name || "(unnamed)";
